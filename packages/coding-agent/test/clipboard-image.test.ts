@@ -47,6 +47,14 @@ function spawnError(error: Error): SpawnSyncReturns<Buffer> {
 	};
 }
 
+function decodeEncodedCommand(args: string[]): string {
+	const idx = args.indexOf("-EncodedCommand");
+	if (idx < 0) throw new Error("-EncodedCommand not present in args");
+	const encoded = args[idx + 1];
+	if (!encoded) throw new Error("-EncodedCommand argument missing");
+	return Buffer.from(encoded, "base64").toString("utf16le");
+}
+
 describe("readClipboardImage", () => {
 	beforeEach(() => {
 		vi.resetModules();
@@ -108,7 +116,7 @@ describe("readClipboardImage", () => {
 		expect(Array.from(result?.bytes ?? [])).toEqual([9, 8]);
 	});
 
-	test("WSL: passes PowerShell path directly instead of through a custom env var", async () => {
+	test("WSL: passes PowerShell path directly via -EncodedCommand", async () => {
 		mocks.clipboard.hasImage.mockImplementation(() => {
 			throw new Error("clipboard.hasImage should not be called before PowerShell on WSL");
 		});
@@ -124,12 +132,17 @@ describe("readClipboardImage", () => {
 				return spawnOk(Buffer.from("C:\\Users\\O'Hare\\clip.png\n", "utf-8"));
 			}
 
-			if (command === "powershell.exe") {
+			if (command === "pwsh.exe") {
 				const spawnOptions = options as { env?: NodeJS.ProcessEnv };
 				expect(spawnOptions.env?.PI_WSL_CLIPBOARD_IMAGE_PATH).toBeUndefined();
-				expect(args[2]).toContain("$path = 'C:\\Users\\O''Hare\\clip.png'");
+				expect(args).toContain("-NoProfile");
+				expect(args).toContain("-ExecutionPolicy");
+				expect(args).toContain("Bypass");
+				const script = decodeEncodedCommand(args);
+				expect(script).toContain("$path = 'C:\\Users\\O''Hare\\clip.png'");
+				expect(script).toContain("Add-Type -AssemblyName System.Windows.Forms");
 				if (!tmpFile) {
-					throw new Error("wslpath should be called before powershell.exe");
+					throw new Error("wslpath should be called before pwsh.exe");
 				}
 				writeFileSync(tmpFile, Buffer.from([4, 5, 6]));
 				return spawnOk(Buffer.from("ok\n", "utf-8"));

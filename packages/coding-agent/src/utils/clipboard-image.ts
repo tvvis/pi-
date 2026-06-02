@@ -1,6 +1,6 @@
 import { spawnSync } from "child_process";
 import { randomUUID } from "crypto";
-import { readFileSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -16,7 +16,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "im
 
 const DEFAULT_LIST_TIMEOUT_MS = 1000;
 const DEFAULT_READ_TIMEOUT_MS = 3000;
-const DEFAULT_POWERSHELL_TIMEOUT_MS = 5000;
+const DEFAULT_POWERSHELL_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
 export function isWaylandSession(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -90,7 +90,7 @@ function runCommand(
 	command: string,
 	args: string[],
 	options?: { timeoutMs?: number; maxBufferBytes?: number; env?: NodeJS.ProcessEnv },
-): { stdout: Buffer; ok: boolean } {
+): { stdout: Buffer; stderr: Buffer; ok: boolean; status: number | null; error: NodeJS.ErrnoException | null } {
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
 	const maxBufferBytes = options?.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
 
@@ -100,19 +100,21 @@ function runCommand(
 		env: options?.env,
 	});
 
-	if (result.error) {
-		return { ok: false, stdout: Buffer.alloc(0) };
-	}
-
-	if (result.status !== 0) {
-		return { ok: false, stdout: Buffer.alloc(0) };
-	}
-
 	const stdout = Buffer.isBuffer(result.stdout)
 		? result.stdout
 		: Buffer.from(result.stdout ?? "", typeof result.stdout === "string" ? "utf-8" : undefined);
 
-	return { ok: true, stdout };
+	const stderr = Buffer.isBuffer(result.stderr)
+		? result.stderr
+		: Buffer.from(result.stderr ?? "", typeof result.stderr === "string" ? "utf-8" : undefined);
+
+	return {
+		ok: !result.error && result.status === 0,
+		status: result.status,
+		error: result.error ?? null,
+		stdout,
+		stderr,
+	};
 }
 
 function readClipboardImageViaWlPaste(): ClipboardImage | null {
@@ -154,11 +156,40 @@ function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /**
+ * Locate a PowerShell 7 (pwsh.exe) binary. WSL interop can usually resolve
+ * `pwsh.exe` via Windows PATH, but MSIX/Store installs and PATH-stripped
+ * environments sometimes can't. Fall back to the common MSI install paths.
+ */
+let cachedPowerShellCommand: string | null | undefined;
+function findPowerShellCommand(): string | null {
+	if (cachedPowerShellCommand !== undefined) {
+		return cachedPowerShellCommand;
+	}
+	const absoluteCandidates = [
+		"/mnt/c/Program Files/PowerShell/7/pwsh.exe",
+		"/mnt/c/Program Files (x86)/PowerShell/7/pwsh.exe",
+	];
+	for (const candidate of absoluteCandidates) {
+		if (existsSync(candidate)) {
+			cachedPowerShellCommand = candidate;
+			return candidate;
+		}
+	}
+	cachedPowerShellCommand = "pwsh.exe";
+	return "pwsh.exe";
+}
+
+/**
  * On WSL, the Linux clipboard (Wayland/X11) does not receive image data from
  * Windows screenshots (Win+Shift+S). PowerShell can access the Windows clipboard
  * directly, so we use it as a fallback.
  */
 function readClipboardImageViaPowerShell(): ClipboardImage | null {
+	const pwshCmd = findPowerShellCommand();
+	if (!pwshCmd) {
+		return null;
+	}
+
 	const tmpFile = join(tmpdir(), `pi-wsl-clip-${randomUUID()}.png`);
 
 	try {
@@ -181,7 +212,11 @@ function readClipboardImageViaPowerShell(): ClipboardImage | null {
 			"if ($img) { $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else { Write-Output 'empty' }",
 		].join("; ");
 
-		const result = runCommand("powershell.exe", ["-NoProfile", "-Command", psScript], {
+		// Use -EncodedCommand (Base64 UTF-16LE) to avoid command-line quoting /
+		// backslash issues. -ExecutionPolicy Bypass avoids GPO machine policy
+		// blocking the script. -NoProfile avoids profile-load side effects.
+		const encoded = Buffer.from(psScript, "utf16le").toString("base64");
+		const result = runCommand(pwshCmd, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
 			timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS,
 		});
 		if (!result.ok) {
@@ -190,6 +225,8 @@ function readClipboardImageViaPowerShell(): ClipboardImage | null {
 
 		const output = result.stdout.toString("utf-8").trim();
 		if (output !== "ok") {
+			// "empty" (no image) and any other unexpected output are both
+			// non-fatal; just return null.
 			return null;
 		}
 
@@ -262,12 +299,11 @@ export async function readClipboardImage(options?: {
 		return null;
 	}
 
+	const wsl = isWSL(env);
+	const wayland = isWaylandSession(env);
 	let image: ClipboardImage | null = null;
 
 	if (platform === "linux") {
-		const wsl = isWSL(env);
-		const wayland = isWaylandSession(env);
-
 		if (wayland || wsl) {
 			image = readClipboardImageViaWlPaste() ?? readClipboardImageViaXclip();
 		}
@@ -281,6 +317,10 @@ export async function readClipboardImage(options?: {
 		}
 	} else {
 		image = await readClipboardImageViaNativeClipboard();
+	}
+
+	if (!image) {
+		return null;
 	}
 
 	if (!image) {

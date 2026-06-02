@@ -39,6 +39,11 @@
 - Fixed OSC 8 hyperlinks to pass through tmux when the client supports them ([#5189](https://github.com/earendil-works/pi-mono/pull/5189) by [@mpazik](https://github.com/mpazik)).
 - Fixed ANSI text wrapping to avoid stack overflows on very long wrapped lines ([#5185](https://github.com/earendil-works/pi-mono/issues/5185)).
 
+### Fixed
+
+- Use `pwsh.exe` (PowerShell 7) instead of `powershell.exe` (legacy 5.1) for the WSL clipboard image fallback so users whose `powershell.exe` is locked by group policy can still paste images.
+- WSL clipboard image paste now uses `-EncodedCommand` + `-ExecutionPolicy Bypass` + a 15s timeout for reliable invocation under GPO-restricted PowerShell, and locates `pwsh.exe` via the standard MSI install path when WSL interop cannot resolve it on `PATH`.
+
 ## [0.77.0] - 2026-05-28
 
 ### New Features

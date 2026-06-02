@@ -104,7 +104,7 @@ export const KEYBINDINGS = {
 		description: "Restore queued messages",
 	},
 	"app.clipboard.pasteImage": {
-		defaultKeys: process.platform === "win32" ? "alt+v" : "ctrl+v",
+		defaultKeys: process.platform === "win32" || process.env.WSL_DISTRO_NAME ? "alt+v" : "ctrl+v",
 		description: "Paste image from clipboard",
 	},
 	"app.session.new": { defaultKeys: [], description: "Start a new session" },

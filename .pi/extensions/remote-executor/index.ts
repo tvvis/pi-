@@ -318,7 +318,18 @@ export default function (pi: ExtensionAPI) {
 
     renderCall(args, theme, _context) {
       const host = String(args.host ?? "");
-      const label = args.path ? String(args.path) : "inline";
+      let label: string;
+      if (args.path) {
+        label = basename(String(args.path));
+      } else if (args.command) {
+        const firstLine = String(args.command).split("\n")[0].trim();
+        const MAX = 80;
+        label = firstLine.length > MAX
+          ? `${firstLine.slice(0, MAX - 1)}…`
+          : firstLine || "(command)";
+      } else {
+        label = "inline";
+      }
       const text =
         theme.fg("toolTitle", theme.bold("run_script")) +
         " → " +

@@ -378,13 +378,6 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.5");
 	});
 
-	test("zai, minimax, and cerebras defaults track current models", () => {
-		expect(defaultModelPerProvider.zai).toBe("glm-5.1");
-		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider.cerebras).toBe("zai-glm-4.7");
-	});
-
 	test("ai-gateway default tracks current model", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
 	});

@@ -123,4 +123,61 @@ describe("FooterComponent width handling", () => {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 	});
+
+	it("omits the thinking level indicator for minimax providers", () => {
+		const width = 120;
+		for (const provider of ["minimax", "minimax-cn"]) {
+			const session = createSession({
+				sessionName: "",
+				modelId: "MiniMax-M2.7",
+				provider,
+				reasoning: true,
+				thinkingLevel: "high",
+				usage: {
+					input: 100,
+					output: 200,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: { total: 0.001 },
+				},
+			});
+			const footer = new FooterComponent(session, createFooterData(1));
+
+			const lines = footer.render(width);
+			const statsLine = lines[1] ?? "";
+			// Should not contain the thinking level or "thinking off" text
+			expect(stripAnsi(statsLine)).not.toContain("thinking off");
+			expect(stripAnsi(statsLine)).not.toContain("• high");
+			expect(stripAnsi(statsLine)).not.toContain("• low");
+			expect(stripAnsi(statsLine)).not.toContain("• medium");
+		}
+	});
+
+	it("shows the thinking level indicator for non-minimax reasoning models", () => {
+		const width = 120;
+		const session = createSession({
+			sessionName: "",
+			modelId: "claude-sonnet-4-5",
+			provider: "anthropic",
+			reasoning: true,
+			thinkingLevel: "high",
+			usage: {
+				input: 100,
+				output: 200,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 0.001 },
+			},
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+
+		const lines = footer.render(width);
+		const statsLine = stripAnsi(lines[1] ?? "");
+		expect(statsLine).toContain("• high");
+	});
 });
+
+// Minimal ANSI escape stripper for assertions that need plain text.
+function stripAnsi(text: string): string {
+	return text.replace(/\x1b\[[0-9;]*m/g, "");
+}

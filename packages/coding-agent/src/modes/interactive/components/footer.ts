@@ -167,9 +167,11 @@ export class FooterComponent implements Component {
 		// Calculate available space for padding (minimum 2 spaces between stats and model)
 		const minPadding = 2;
 
-		// Add thinking level indicator if model supports reasoning
+		// Add thinking level indicator if model supports reasoning.
+		// Skip for MiniMax models — they accept thinking tokens but the level
+		// is not surfaced as a user-facing control in the footer.
 		let rightSideWithoutProvider = modelName;
-		if (state.model?.reasoning) {
+		if (state.model?.reasoning && state.model.provider !== "minimax" && state.model.provider !== "minimax-cn") {
 			const thinkingLevel = state.thinkingLevel || "off";
 			rightSideWithoutProvider =
 				thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;

@@ -247,6 +247,8 @@ export default function (pi: ExtensionAPI) {
       "Upload and execute a bash script or inline command on a remote Ansible host with assertion-based validation",
     promptGuidelines: [
       "For the full workflow, host selection rules, and assertion patterns, load the `script-validator` skill.",
+      "Use `path` for any multi-step work: write the script to a local file first, then call run_script with path. Do not embed scripts in inline commands via heredoc (`cat > x.sh <<EOF` / `tee` / `base64 -d | bash`) — the upload path is the only supported way to run a non-trivial script.",
+      "Use `command` only for short, throwaway shell snippets and one-shot `# @assert:` checks. For multi-step procedures, make multiple `command` calls (or switch to `path`).",
     ],
     renderShell: "self",
     parameters: Type.Object({
@@ -335,7 +337,7 @@ export default function (pi: ExtensionAPI) {
         " → " +
         theme.fg("accent", host) +
         "  " +
-        theme.fg("muted", label);
+        theme.fg("text", label);
       return new Text(text, 1, 0);
     },
 

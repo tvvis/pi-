@@ -1,6 +1,7 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.ts";
+import { formatDeepSeekBalanceForFooter } from "../../../core/deepseek-balance.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -175,6 +176,17 @@ export class FooterComponent implements Component {
 			const thinkingLevel = state.thinkingLevel || "off";
 			rightSideWithoutProvider =
 				thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;
+		}
+
+		// Append DeepSeek balance when the active model is on the DeepSeek provider.
+		if (state.model?.provider === "deepseek") {
+			const balance = this.footerData.getDeepSeekBalance();
+			const balanceText = balance ? formatDeepSeekBalanceForFooter(balance) : null;
+			// `null` = no cached value yet (still loading or fetch failed without prior data).
+			// `undefined` text would render literally; we just omit the segment in that case.
+			if (balanceText) {
+				rightSideWithoutProvider = `${rightSideWithoutProvider} • ${balanceText}`;
+			}
 		}
 
 		// Prepend the provider in parentheses if there are multiple providers and there's enough room

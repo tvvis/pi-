@@ -2,6 +2,7 @@ import { type ExecFileException, execFile, spawnSync } from "child_process";
 import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatchFile, watchFile } from "fs";
 import { dirname, join, resolve } from "path";
 import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "../utils/fs-watch.ts";
+import type { DeepSeekBalance } from "./deepseek-balance.ts";
 
 type GitPaths = {
 	repoDir: string;
@@ -110,6 +111,8 @@ export class FooterDataProvider {
 	private reftableTablesListWatcher: FSWatcher | null = null;
 	private reftableTablesListPath: string | null = null;
 	private branchChangeCallbacks = new Set<() => void>();
+	private balanceChangeCallbacks = new Set<() => void>();
+	private deepseekBalance: DeepSeekBalance | null = null;
 	private availableProviderCount = 0;
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	private gitWatcherRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -140,6 +143,31 @@ export class FooterDataProvider {
 	onBranchChange(callback: () => void): () => void {
 		this.branchChangeCallbacks.add(callback);
 		return () => this.branchChangeCallbacks.delete(callback);
+	}
+
+	/** Cached DeepSeek balance, or null if unknown / not applicable. */
+	getDeepSeekBalance(): DeepSeekBalance | null {
+		return this.deepseekBalance;
+	}
+
+	/** Subscribe to DeepSeek balance changes. Returns unsubscribe function. */
+	onDeepSeekBalanceChange(callback: () => void): () => void {
+		this.balanceChangeCallbacks.add(callback);
+		return () => this.balanceChangeCallbacks.delete(callback);
+	}
+
+	/** Internal: update cached DeepSeek balance and notify subscribers. */
+	setDeepSeekBalance(balance: DeepSeekBalance | null): void {
+		const previous = this.deepseekBalance;
+		if (
+			previous?.available === balance?.available &&
+			previous?.total === balance?.total &&
+			previous?.currency === balance?.currency
+		) {
+			return;
+		}
+		this.deepseekBalance = balance;
+		this.notifyBalanceChange();
 	}
 
 	/** Internal: set extension status */
@@ -192,10 +220,15 @@ export class FooterDataProvider {
 		}
 		this.clearGitWatchers();
 		this.branchChangeCallbacks.clear();
+		this.balanceChangeCallbacks.clear();
 	}
 
 	private notifyBranchChange(): void {
 		for (const cb of this.branchChangeCallbacks) cb();
+	}
+
+	private notifyBalanceChange(): void {
+		for (const cb of this.balanceChangeCallbacks) cb();
 	}
 
 	private scheduleRefresh(): void {
@@ -381,8 +414,13 @@ export class FooterDataProvider {
 	}
 }
 
-/** Read-only view for extensions - excludes setExtensionStatus, setAvailableProviderCount and dispose */
+/** Read-only view for extensions - excludes setExtensionStatus, setAvailableProviderCount, setDeepSeekBalance and dispose */
 export type ReadonlyFooterDataProvider = Pick<
 	FooterDataProvider,
-	"getGitBranch" | "getExtensionStatuses" | "getAvailableProviderCount" | "onBranchChange"
+	| "getGitBranch"
+	| "getExtensionStatuses"
+	| "getAvailableProviderCount"
+	| "onBranchChange"
+	| "getDeepSeekBalance"
+	| "onDeepSeekBalanceChange"
 >;

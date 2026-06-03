@@ -68,6 +68,11 @@ function createFooterData(providerCount: number): ReadonlyFooterDataProvider {
 			void callback;
 			return () => {};
 		},
+		getDeepSeekBalance: () => null,
+		onDeepSeekBalanceChange: (callback: () => void) => {
+			void callback;
+			return () => {};
+		},
 	};
 
 	return provider;

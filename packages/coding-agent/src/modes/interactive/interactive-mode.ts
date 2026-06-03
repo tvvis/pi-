@@ -61,6 +61,7 @@ import {
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import { fetchDeepSeekBalance } from "../../core/deepseek-balance.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -288,6 +289,7 @@ export class InteractiveMode {
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
+	private lastDeepSeekBalanceRefreshAt = 0;
 	private changelogMarkdown: string | undefined = undefined;
 	private startupNoticesShown = false;
 	private anthropicSubscriptionWarningShown = false;
@@ -716,6 +718,11 @@ export class InteractiveMode {
 			this.ui.requestRender();
 		});
 
+		// Re-render footer when DeepSeek balance arrives.
+		this.footerDataProvider.onDeepSeekBalanceChange(() => {
+			this.ui.requestRender();
+		});
+
 		// Initialize available provider count for footer display
 		await this.updateAvailableProviderCount();
 	}
@@ -803,12 +810,54 @@ export class InteractiveMode {
 		// Main interactive loop
 		while (true) {
 			const userInput = await this.getUserInput();
+			this.refreshDeepSeekBalance();
 			try {
 				await this.session.prompt(userInput);
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
 			}
+		}
+	}
+
+	/**
+	 * Fire-and-forget DeepSeek balance refresh for the currently active model.
+	 * No-op for non-DeepSeek providers, when offline, or when no API key is
+	 * configured. Network failures are absorbed by `fetchDeepSeekBalance` and
+	 * just leave the cached value untouched.
+	 */
+	private refreshDeepSeekBalance(): void {
+		if (process.env.PI_OFFLINE) return;
+
+		const model = this.session.state.model;
+		if (!model || model.provider !== "deepseek") return;
+
+		// Throttle: at most once every 120s. First call (lastDeepSeekBalanceRefreshAt === 0)
+		// always goes through so the footer has a value after the user's first prompt.
+		const now = Date.now();
+		if (this.lastDeepSeekBalanceRefreshAt !== 0 && now - this.lastDeepSeekBalanceRefreshAt < 120_000) return;
+		this.lastDeepSeekBalanceRefreshAt = now;
+
+		void this.resolveDeepSeekApiKey(model.baseUrl)
+			.then((resolved) => {
+				if (!resolved) return;
+				return fetchDeepSeekBalance(resolved.apiKey, resolved.baseUrl);
+			})
+			.then((balance) => {
+				this.footerDataProvider.setDeepSeekBalance(balance ?? null);
+			})
+			.catch(() => {
+				// Swallow; footer keeps previous (or absent) value.
+			});
+	}
+
+	private async resolveDeepSeekApiKey(baseUrl: string): Promise<{ apiKey: string; baseUrl: string } | undefined> {
+		try {
+			const apiKey = await this.session.modelRegistry.getApiKeyForProvider("deepseek");
+			if (!apiKey) return undefined;
+			return { apiKey, baseUrl };
+		} catch {
+			return undefined;
 		}
 	}
 

@@ -5,6 +5,7 @@
 ### Added
 
 - Added `ctx.mode` to extension contexts so extensions can distinguish TUI, RPC, JSON, and print mode.
+- Added `hideStartupExtras` setting to hide the model scope line, keybinding hints, and onboarding tips at startup while still showing the version line.
 
 ### Changed
 

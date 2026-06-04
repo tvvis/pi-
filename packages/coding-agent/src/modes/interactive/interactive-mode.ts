@@ -592,7 +592,11 @@ export class InteractiveMode {
 		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
 		this.fdPath = fdPath;
 
-		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
+		const showStartupExtras =
+			(this.options.verbose || !this.settingsManager.getQuietStartup()) &&
+			!this.settingsManager.getHideStartupExtras();
+
+		if (this.session.scopedModels.length > 0 && showStartupExtras) {
 			const modelList = this.session.scopedModels
 				.map((sm) => {
 					const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
@@ -654,8 +658,8 @@ export class InteractiveMode {
 				`Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`,
 			);
 			this.builtInHeader = new ExpandableText(
-				() => `${logo}\n${compactInstructions}\n${compactOnboarding}\n\n${onboarding}`,
-				() => `${logo}\n${expandedInstructions}\n\n${onboarding}`,
+				() => (showStartupExtras ? `${logo}\n${compactInstructions}\n${compactOnboarding}\n\n${onboarding}` : logo),
+				() => (showStartupExtras ? `${logo}\n${expandedInstructions}\n\n${onboarding}` : logo),
 				this.getStartupExpansionState(),
 				1,
 				0,
@@ -664,7 +668,11 @@ export class InteractiveMode {
 			// Setup UI layout
 			this.headerContainer.addChild(new Spacer(1));
 			this.headerContainer.addChild(this.builtInHeader);
-			this.headerContainer.addChild(new Spacer(1));
+			if (showStartupExtras) {
+				// Skip the trailing spacer when extras are hidden so we don't double up with the
+				// Spacer(1) that showLoadedResources adds before the [Context] section.
+				this.headerContainer.addChild(new Spacer(1));
+			}
 		} else {
 			// Minimal header when silenced
 			this.builtInHeader = new Text("", 0, 0);
@@ -3901,6 +3909,7 @@ export class InteractiveMode {
 					editorPaddingX: this.settingsManager.getEditorPaddingX(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
+					hideStartupExtras: this.settingsManager.getHideStartupExtras(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
 					warnings: this.settingsManager.getWarnings(),
@@ -3990,6 +3999,9 @@ export class InteractiveMode {
 					},
 					onQuietStartupChange: (enabled) => {
 						this.settingsManager.setQuietStartup(enabled);
+					},
+					onHideStartupExtrasChange: (enabled) => {
+						this.settingsManager.setHideStartupExtras(enabled);
 					},
 					onDoubleEscapeActionChange: (action) => {
 						this.settingsManager.setDoubleEscapeAction(action);

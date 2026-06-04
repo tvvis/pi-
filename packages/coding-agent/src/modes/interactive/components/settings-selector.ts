@@ -55,6 +55,7 @@ export interface SettingsConfig {
 	editorPaddingX: number;
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
+	hideStartupExtras: boolean;
 	clearOnShrink: boolean;
 	showTerminalProgress: boolean;
 	warnings: WarningSettings;
@@ -83,6 +84,7 @@ export interface SettingsCallbacks {
 	onEditorPaddingXChange: (padding: number) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
+	onHideStartupExtrasChange: (enabled: boolean) => void;
 	onClearOnShrinkChange: (enabled: boolean) => void;
 	onShowTerminalProgressChange: (enabled: boolean) => void;
 	onWarningsChange: (warnings: WarningSettings) => void;
@@ -268,6 +270,14 @@ export class SettingsSelectorComponent extends Container {
 				label: "Quiet startup",
 				description: "Disable verbose printing at startup",
 				currentValue: config.quietStartup ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "hide-startup-extras",
+				label: "Hide startup extras",
+				description:
+					"Hide the model scope line, keybinding hints, and onboarding tips. Version line is still shown.",
+				currentValue: config.hideStartupExtras ? "true" : "false",
 				values: ["true", "false"],
 			},
 			{
@@ -508,6 +518,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "quiet-startup":
 						callbacks.onQuietStartupChange(newValue === "true");
+						break;
+					case "hide-startup-extras":
+						callbacks.onHideStartupExtrasChange(newValue === "true");
 						break;
 					case "install-telemetry":
 						callbacks.onEnableInstallTelemetryChange(newValue === "true");

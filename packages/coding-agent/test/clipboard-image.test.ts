@@ -157,5 +157,4 @@ describe("readClipboardImage", () => {
 		expect(result?.mimeType).toBe("image/png");
 		expect(Array.from(result?.bytes ?? [])).toEqual([4, 5, 6]);
 	});
-
 });

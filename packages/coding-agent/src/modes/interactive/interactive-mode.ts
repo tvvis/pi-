@@ -48,19 +48,10 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { spawn, spawnSync } from "child_process";
-import {
-	APP_NAME,
-	APP_TITLE,
-	getAgentDir,
-	getAuthPath,
-	getDebugLogPath,
-	getDocsPath,
-	getShareViewerUrl,
-	VERSION,
-} from "../../config.ts";
+import { spawn } from "child_process";
+import { APP_NAME, APP_TITLE, getAgentDir, getAuthPath, getDebugLogPath, getDocsPath, VERSION } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
-import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { fetchDeepSeekBalance } from "../../core/deepseek-balance.ts";
 import type {
 	AutocompleteProviderFactory,
@@ -76,7 +67,7 @@ import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
-import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.ts";
+import { defaultModelPerProvider, findExactModelReferenceMatch } from "../../core/model-resolver.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
@@ -87,7 +78,6 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.ts";
-import { copyToClipboard } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
@@ -98,7 +88,6 @@ import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
-import { BorderedLoader } from "./components/bordered-loader.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { CountdownTimer } from "./components/countdown-timer.ts";
@@ -115,7 +104,6 @@ import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./c
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";
-import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
@@ -2547,11 +2535,6 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/scoped-models") {
-				this.editor.setText("");
-				await this.showModelsSelector();
-				return;
-			}
 			if (text === "/model" || text.startsWith("/model ")) {
 				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
 				this.editor.setText("");
@@ -2563,63 +2546,13 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/import" || text.startsWith("/import ")) {
-				await this.handleImportCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/share") {
-				await this.handleShareCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/copy") {
-				await this.handleCopyCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/name" || text.startsWith("/name ")) {
-				this.handleNameCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/session") {
-				this.handleSessionCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/changelog") {
-				this.handleChangelogCommand();
-				this.editor.setText("");
-				return;
-			}
 			if (text === "/hotkeys") {
 				this.handleHotkeysCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/fork") {
-				this.showUserMessageSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/clone") {
-				this.editor.setText("");
-				await this.handleCloneCommand();
-				return;
-			}
 			if (text === "/tree") {
 				this.showTreeSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/login") {
-				this.showOAuthSelector("login");
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/logout") {
-				this.showOAuthSelector("logout");
 				this.editor.setText("");
 				return;
 			}
@@ -4215,83 +4148,6 @@ export class InteractiveMode {
 		});
 	}
 
-	private async showModelsSelector(): Promise<void> {
-		// Get all available models
-		this.session.modelRegistry.refresh();
-		const allModels = this.session.modelRegistry.getAvailable();
-
-		if (allModels.length === 0) {
-			this.showStatus("No models available");
-			return;
-		}
-
-		// Check if session has scoped models (from previous session-only changes or CLI --models)
-		const sessionScopedModels = this.session.scopedModels;
-		const hasSessionScope = sessionScopedModels.length > 0;
-
-		// Build enabled model IDs from session state or settings
-		let currentEnabledIds: string[] | null = null;
-
-		if (hasSessionScope) {
-			// Use current session's scoped models
-			currentEnabledIds = sessionScopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
-		} else {
-			// Fall back to settings
-			const patterns = this.settingsManager.getEnabledModels();
-			if (patterns !== undefined && patterns.length > 0) {
-				const scopedModels = await resolveModelScope(patterns, this.session.modelRegistry);
-				currentEnabledIds = scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
-			}
-		}
-
-		// Helper to update session's scoped models (session-only, no persist)
-		const updateSessionModels = async (enabledIds: string[] | null) => {
-			currentEnabledIds = enabledIds === null ? null : [...enabledIds];
-			if (enabledIds && enabledIds.length > 0 && enabledIds.length < allModels.length) {
-				const newScopedModels = await resolveModelScope(enabledIds, this.session.modelRegistry);
-				this.session.setScopedModels(
-					newScopedModels.map((sm) => ({
-						model: sm.model,
-						thinkingLevel: sm.thinkingLevel,
-					})),
-				);
-			} else {
-				// All enabled or none enabled = no filter
-				this.session.setScopedModels([]);
-			}
-			await this.updateAvailableProviderCount();
-			this.ui.requestRender();
-		};
-
-		this.showSelector((done) => {
-			const selector = new ScopedModelsSelectorComponent(
-				{
-					allModels,
-					enabledModelIds: currentEnabledIds,
-				},
-				{
-					onChange: async (enabledIds) => {
-						await updateSessionModels(enabledIds);
-					},
-					onPersist: (enabledIds) => {
-						// Persist to settings
-						const newPatterns =
-							enabledIds === null || enabledIds.length === allModels.length
-								? undefined // All enabled = clear filter
-								: enabledIds;
-						this.settingsManager.setEnabledModels(newPatterns ? [...newPatterns] : undefined);
-						this.showStatus("Model selection saved to settings");
-					},
-					onCancel: () => {
-						done();
-						this.ui.requestRender();
-					},
-				},
-			);
-			return { component: selector, focus: selector };
-		});
-	}
-
 	private showUserMessageSelector(): void {
 		const userMessages = this.session.getUserMessagesForForking();
 
@@ -4332,29 +4188,6 @@ export class InteractiveMode {
 			return { component: selector, focus: selector.getMessageList() };
 		});
 	}
-
-	private async handleCloneCommand(): Promise<void> {
-		const leafId = this.sessionManager.getLeafId();
-		if (!leafId) {
-			this.showStatus("Nothing to clone yet");
-			return;
-		}
-
-		try {
-			const result = await this.runtimeHost.fork(leafId, { position: "at" });
-			if (result.cancelled) {
-				this.ui.requestRender();
-				return;
-			}
-
-			this.renderCurrentSessionState();
-			this.editor.setText("");
-			this.showStatus("Cloned to new session");
-		} catch (error: unknown) {
-			this.showError(error instanceof Error ? error.message : String(error));
-		}
-	}
-
 	private showTreeSelector(initialSelectedId?: string): void {
 		const tree = this.sessionManager.getTree();
 		const realLeafId = this.sessionManager.getLeafId();
@@ -4589,25 +4422,6 @@ export class InteractiveMode {
 		return filteredOptions.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
-	private getLogoutProviderOptions(): AuthSelectorProvider[] {
-		const authStorage = this.session.modelRegistry.authStorage;
-		const options: AuthSelectorProvider[] = [];
-
-		for (const providerId of authStorage.list()) {
-			const credential = authStorage.get(providerId);
-			if (!credential) {
-				continue;
-			}
-			options.push({
-				id: providerId,
-				name: this.session.modelRegistry.getProviderDisplayName(providerId),
-				authType: credential.type,
-			});
-		}
-
-		return options.sort((a, b) => a.name.localeCompare(b.name));
-	}
-
 	private showLoginAuthTypeSelector(): void {
 		const subscriptionLabel = "Use a subscription";
 		const apiKeyLabel = "Use an API key";
@@ -4668,56 +4482,6 @@ export class InteractiveMode {
 			return { component: selector, focus: selector };
 		});
 	}
-
-	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
-		if (mode === "login") {
-			this.showLoginAuthTypeSelector();
-			return;
-		}
-
-		const providerOptions = this.getLogoutProviderOptions();
-		if (providerOptions.length === 0) {
-			this.showStatus(
-				"No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
-			);
-			return;
-		}
-
-		this.showSelector((done) => {
-			const selector = new OAuthSelectorComponent(
-				mode,
-				this.session.modelRegistry.authStorage,
-				providerOptions,
-				async (providerId: string) => {
-					done();
-
-					const providerOption = providerOptions.find((provider) => provider.id === providerId);
-					if (!providerOption) {
-						return;
-					}
-
-					try {
-						this.session.modelRegistry.authStorage.logout(providerOption.id);
-						this.session.modelRegistry.refresh();
-						await this.updateAvailableProviderCount();
-						const message =
-							providerOption.authType === "oauth"
-								? `Logged out of ${providerOption.name}`
-								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
-						this.showStatus(message);
-					} catch (error: unknown) {
-						this.showError(`Logout failed: ${error instanceof Error ? error.message : String(error)}`);
-					}
-				},
-				() => {
-					done();
-					this.ui.requestRender();
-				},
-			);
-			return { component: selector, focus: selector };
-		});
-	}
-
 	private async completeProviderAuthentication(
 		providerId: string,
 		providerName: string,
@@ -5097,244 +4861,6 @@ export class InteractiveMode {
 		}
 		return argsString.slice(0, firstWhitespaceIndex);
 	}
-
-	private async handleImportCommand(text: string): Promise<void> {
-		const inputPath = this.getPathCommandArgument(text, "/import");
-		if (!inputPath) {
-			this.showError("Usage: /import <path.jsonl>");
-			return;
-		}
-
-		const confirmed = await this.showExtensionConfirm("Import session", `Replace current session with ${inputPath}?`);
-		if (!confirmed) {
-			this.showStatus("Import cancelled");
-			return;
-		}
-
-		try {
-			if (this.loadingAnimation) {
-				this.loadingAnimation.stop();
-				this.loadingAnimation = undefined;
-			}
-			this.statusContainer.clear();
-			const result = await this.runtimeHost.importFromJsonl(inputPath);
-			if (result.cancelled) {
-				this.showStatus("Import cancelled");
-				return;
-			}
-			this.renderCurrentSessionState();
-			this.showStatus(`Session imported from: ${inputPath}`);
-		} catch (error: unknown) {
-			if (error instanceof MissingSessionCwdError) {
-				const selectedCwd = await this.promptForMissingSessionCwd(error);
-				if (!selectedCwd) {
-					this.showStatus("Import cancelled");
-					return;
-				}
-				const result = await this.runtimeHost.importFromJsonl(inputPath, selectedCwd);
-				if (result.cancelled) {
-					this.showStatus("Import cancelled");
-					return;
-				}
-				this.renderCurrentSessionState();
-				this.showStatus(`Session imported from: ${inputPath}`);
-				return;
-			}
-			if (error instanceof SessionImportFileNotFoundError) {
-				this.showError(`Failed to import session: ${error.message}`);
-				return;
-			}
-			await this.handleFatalRuntimeError("Failed to import session", error);
-		}
-	}
-
-	private async handleShareCommand(): Promise<void> {
-		// Check if gh is available and logged in
-		try {
-			const authResult = spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });
-			if (authResult.status !== 0) {
-				this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
-				return;
-			}
-		} catch {
-			this.showError("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/");
-			return;
-		}
-
-		// Export to a temp file
-		const tmpFile = path.join(os.tmpdir(), "session.html");
-		try {
-			await this.session.exportToHtml(tmpFile);
-		} catch (error: unknown) {
-			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
-			return;
-		}
-
-		// Show cancellable loader, replacing the editor
-		const loader = new BorderedLoader(this.ui, theme, "Creating gist...");
-		this.editorContainer.clear();
-		this.editorContainer.addChild(loader);
-		this.ui.setFocus(loader);
-		this.ui.requestRender();
-
-		const restoreEditor = () => {
-			loader.dispose();
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.ui.setFocus(this.editor);
-			try {
-				fs.unlinkSync(tmpFile);
-			} catch {
-				// Ignore cleanup errors
-			}
-		};
-
-		// Create a secret gist asynchronously
-		let proc: ReturnType<typeof spawn> | null = null;
-
-		loader.onAbort = () => {
-			proc?.kill();
-			restoreEditor();
-			this.showStatus("Share cancelled");
-		};
-
-		try {
-			const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-				proc = spawn("gh", ["gist", "create", "--public=false", tmpFile]);
-				let stdout = "";
-				let stderr = "";
-				proc.stdout?.on("data", (data) => {
-					stdout += data.toString();
-				});
-				proc.stderr?.on("data", (data) => {
-					stderr += data.toString();
-				});
-				proc.on("close", (code) => resolve({ stdout, stderr, code }));
-			});
-
-			if (loader.signal.aborted) return;
-
-			restoreEditor();
-
-			if (result.code !== 0) {
-				const errorMsg = result.stderr?.trim() || "Unknown error";
-				this.showError(`Failed to create gist: ${errorMsg}`);
-				return;
-			}
-
-			// Extract gist ID from the URL returned by gh
-			// gh returns something like: https://gist.github.com/username/GIST_ID
-			const gistUrl = result.stdout?.trim();
-			const gistId = gistUrl?.split("/").pop();
-			if (!gistId) {
-				this.showError("Failed to parse gist ID from gh output");
-				return;
-			}
-
-			// Create the preview URL
-			const previewUrl = getShareViewerUrl(gistId);
-			this.showStatus(`Share URL: ${previewUrl}\nGist: ${gistUrl}`);
-		} catch (error: unknown) {
-			if (!loader.signal.aborted) {
-				restoreEditor();
-				this.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
-			}
-		}
-	}
-
-	private async handleCopyCommand(): Promise<void> {
-		const text = this.session.getLastAssistantText();
-		if (!text) {
-			this.showError("No agent messages to copy yet.");
-			return;
-		}
-
-		try {
-			await copyToClipboard(text);
-			this.showStatus("Copied last agent message to clipboard");
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-		}
-	}
-
-	private handleNameCommand(text: string): void {
-		const name = text.replace(/^\/name\s*/, "").trim();
-		if (!name) {
-			const currentName = this.sessionManager.getSessionName();
-			if (currentName) {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(theme.fg("dim", `Session name: ${currentName}`), 1, 0));
-			} else {
-				this.showWarning("Usage: /name <name>");
-			}
-			this.ui.requestRender();
-			return;
-		}
-
-		this.session.setSessionName(name);
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${name}`), 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleSessionCommand(): void {
-		const stats = this.session.getSessionStats();
-		const sessionName = this.sessionManager.getSessionName();
-
-		let info = `${theme.bold("Session Info")}\n\n`;
-		if (sessionName) {
-			info += `${theme.fg("dim", "Name:")} ${sessionName}\n`;
-		}
-		info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
-		info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n\n`;
-		info += `${theme.bold("Messages")}\n`;
-		info += `${theme.fg("dim", "User:")} ${stats.userMessages}\n`;
-		info += `${theme.fg("dim", "Assistant:")} ${stats.assistantMessages}\n`;
-		info += `${theme.fg("dim", "Tool Calls:")} ${stats.toolCalls}\n`;
-		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
-		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
-		info += `${theme.bold("Tokens")}\n`;
-		info += `${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
-		if (stats.tokens.cacheRead > 0) {
-			info += `${theme.fg("dim", "Cache Read:")} ${stats.tokens.cacheRead.toLocaleString()}\n`;
-		}
-		if (stats.tokens.cacheWrite > 0) {
-			info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
-		}
-		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
-
-		if (stats.cost > 0) {
-			info += `\n${theme.bold("Cost")}\n`;
-			info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}`;
-		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleChangelogCommand(): void {
-		const changelogPath = getChangelogPath();
-		const allEntries = parseChangelog(changelogPath);
-
-		const changelogMarkdown =
-			allEntries.length > 0
-				? allEntries
-						.reverse()
-						.map((e) => e.content)
-						.join("\n\n")
-				: "No changelog entries found.";
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder());
-		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Markdown(changelogMarkdown, 1, 1, this.getMarkdownThemeWithSettings()));
-		this.chatContainer.addChild(new DynamicBorder());
-		this.ui.requestRender();
-	}
-
 	/**
 	 * Get capitalized display string for an app keybinding action.
 	 */

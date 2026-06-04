@@ -6,6 +6,7 @@
 
 - Added `ctx.mode` to extension contexts so extensions can distinguish TUI, RPC, JSON, and print mode.
 - Added `hideStartupExtras` setting to hide the model scope line, keybinding hints, and onboarding tips at startup while still showing the version line.
+- Added `examples/extensions/per-model-compaction.ts`: a per-model auto-compaction extension that triggers on a configurable context-window ratio (e.g. 0.4 for `minimax-cn/*`, 0.2 for `deepseek/*`) and prompts the user to compress, start a new session, or continue, configured under `perModelCompaction` in `settings.json`. Suppresses the prompt until the first `turn_start` after a model switch.
 
 ### Changed
 

@@ -16,6 +16,10 @@
 
 - Fixed opening and listing very large JSONL session files by reading session entries line-by-line instead of materializing the full file as one string ([#5231](https://github.com/earendil-works/pi/issues/5231)).
 
+### Removed
+
+- Removed the `pi.dev` startup version check and its notification, the `PI_SKIP_VERSION_CHECK` environment variable, and the `pi update --self` self-update flow (including `--self`, `--force`, `getSelfUpdatePlan`, `detectInstallMethod`, and the Windows self-update quarantine utilities). `pi update` now only updates installed extension packages; the user maintains the Pi CLI version manually.
+
 ## [0.78.0] - 2026-05-29
 
 ### New Features

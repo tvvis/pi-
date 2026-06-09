@@ -28,7 +28,7 @@ function formatAskCall(args: { question?: string } | undefined): string {
 	if (!question) {
 		return theme.fg("toolTitle", theme.bold("ask"));
 	}
-	return `${theme.fg("toolTitle", theme.bold("ask"))} ${theme.fg("accent", theme.italic(truncate(question, MAX_QUESTION_RENDER_WIDTH)))}`;
+	return `${theme.fg("toolTitle", theme.bold("ask"))} ${chalk.bold.cyan(truncate(question, MAX_QUESTION_RENDER_WIDTH))}`;
 }
 
 function formatAskResult(content: Array<{ type: string; text?: string }> | undefined): string {

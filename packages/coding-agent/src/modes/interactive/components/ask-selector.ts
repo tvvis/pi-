@@ -49,7 +49,7 @@ export class AskSelectorComponent extends Container implements Focusable {
 		this.onCancelCallback = onCancel;
 
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("accent", theme.bold(question)), 1, 0));
+		this.addChild(new Text(chalk.bold.cyan(question), 1, 0));
 		this.addChild(new Spacer(1));
 
 		this.listContainer = new Container();

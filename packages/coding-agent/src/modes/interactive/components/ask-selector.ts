@@ -88,8 +88,8 @@ export class AskSelectorComponent extends Container implements Focusable {
 			const isSelected = i === this.selectedIndex;
 			const marker = isSelected ? theme.fg("accent", "→ ") : "  ";
 			const number = theme.fg("muted", `${i + 1}.`);
-			const label = isSelected ? theme.fg("accent", this.options[i]) : this.options[i];
-			this.listContainer.addChild(new Text(`${marker}${number} ${label}`, 1, 0));
+			const label = isSelected ? theme.fg("accent", this.options[i]) : theme.fg("text", this.options[i]);
+			this.listContainer.addChild(new Text(`  ${marker}${number} ${label}`, 1, 0));
 		}
 	}
 

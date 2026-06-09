@@ -1,5 +1,8 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
+import { AskSelectorComponent } from "../../modes/interactive/components/ask-selector.ts";
+import { theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -12,16 +15,50 @@ const askSchema = Type.Object({
 
 export type AskToolInput = Static<typeof askSchema>;
 
-export function createAskToolDefinition(): ToolDefinition<typeof askSchema, undefined> {
+const MAX_QUESTION_RENDER_WIDTH = 60;
+
+function truncate(text: string, max: number): string {
+	if (text.length <= max) return text;
+	return `${text.slice(0, max - 1)}…`;
+}
+
+function formatAskCall(args: { question?: string; options?: string[] } | undefined): string {
+	const question = args?.question;
+	const options = args?.options;
+	const header = theme.fg("toolTitle", theme.bold("ask"));
+	if (!question) {
+		return header;
+	}
+	const lines: string[] = [];
+	lines.push(`${header} ${theme.fg("toolOutput", theme.italic(truncate(question, MAX_QUESTION_RENDER_WIDTH)))}`);
+	if (options && options.length > 0) {
+		for (let i = 0; i < options.length; i++) {
+			lines.push(theme.fg("muted", `  ${i + 1}. ${options[i]}`));
+		}
+	}
+	return lines.join("\n");
+}
+
+function formatAskResult(content: Array<{ type: string; text?: string }> | undefined): string {
+	const textBlock = content?.find((c) => c.type === "text") as { type: "text"; text: string } | undefined;
+	const text = textBlock?.text;
+	if (!text) return theme.fg("muted", "(no answer)");
+	return theme.fg("toolOutput", text);
+}
+
+type AskRenderState = Record<string, never>;
+
+export function createAskToolDefinition(): ToolDefinition<typeof askSchema, undefined, AskRenderState> {
 	return {
 		name: "ask",
 		label: "ask",
 		description:
-			"Present a question to the user with a set of options. The user selects one option, and the result is the selected text. Use this when you need user input to proceed (e.g., choices about implementation, confirmation of ambiguous intent, or selecting from alternatives).",
+			"Present a question to the user with a set of options. The user either selects an option, types a custom answer, or cancels. Use this when you need user input to proceed (e.g., choices about implementation, confirmation of ambiguous intent, or selecting from alternatives).",
 		promptSnippet: "Present a question with options for the user to choose from",
 		promptGuidelines: [
 			"Use ask when you need the user to make a decision between multiple options before continuing",
 			"Keep options concise (1-5 words each) and the question clear",
+			"The user can also type a custom answer; the ask tool always shows a text input alongside the options",
 			"Do not use ask for simple yes/no questions - just ask in your response and let the user reply",
 			"Only use ask when you are at a decision point and cannot proceed without user input",
 		],
@@ -36,23 +73,51 @@ export function createAskToolDefinition(): ToolDefinition<typeof askSchema, unde
 				throw new Error("ask tool requires an interactive UI (not available in this mode)");
 			}
 
-			// Yield to the event loop so the tool call render can show before the selector replaces the editor.
+			// Yield so the tool call render can show before the UI replaces the editor.
 			await new Promise((resolve) => setTimeout(resolve, 0));
 
-			const selection = await ctx.ui.select(question, options, { signal });
+			const selection = await ctx.ui.custom<{ value: string; cancelled: boolean }>((_tui, _theme, _kb, done) => {
+				let resolved = false;
+				const onAbort = () => {
+					if (resolved) return;
+					resolved = true;
+					done({ value: "", cancelled: true });
+				};
+				signal?.addEventListener("abort", onAbort, { once: true });
 
-			if (signal?.aborted) {
+				const component = new AskSelectorComponent(
+					question,
+					options,
+					(value) => {
+						if (resolved) return;
+						resolved = true;
+						signal?.removeEventListener("abort", onAbort);
+						done({ value, cancelled: false });
+					},
+					() => {
+						if (resolved) return;
+						resolved = true;
+						signal?.removeEventListener("abort", onAbort);
+						done({ value: "", cancelled: true });
+					},
+				);
+				return component;
+			});
+
+			if (signal?.aborted || selection.cancelled) {
 				throw new Error("User cancelled the selection");
 			}
 
-			if (selection === undefined) {
-				throw new Error("No option was selected");
-			}
-
 			return {
-				content: [{ type: "text", text: selection }],
+				content: [{ type: "text", text: selection.value }],
 				details: undefined,
 			};
+		},
+		renderCall(args) {
+			return new Text(formatAskCall(args), 0, 0);
+		},
+		renderResult(result) {
+			return new Text(formatAskResult(result.content), 0, 0);
 		},
 	};
 }

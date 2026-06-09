@@ -1,5 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
+import chalk from "chalk";
 import { type Static, Type } from "typebox";
 import { AskSelectorComponent } from "../../modes/interactive/components/ask-selector.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
@@ -34,7 +35,7 @@ function formatAskResult(content: Array<{ type: string; text?: string }> | undef
 	const textBlock = content?.find((c) => c.type === "text") as { type: "text"; text: string } | undefined;
 	const text = textBlock?.text;
 	if (!text) return theme.fg("muted", "(no answer)");
-	return theme.fg("accent", text);
+	return chalk.white(text);
 }
 
 type AskRenderState = Record<string, never>;

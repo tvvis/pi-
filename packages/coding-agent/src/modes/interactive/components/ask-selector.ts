@@ -8,6 +8,7 @@
  */
 
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import chalk from "chalk";
 import { theme } from "../theme/theme.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
@@ -88,7 +89,7 @@ export class AskSelectorComponent extends Container implements Focusable {
 			const isSelected = i === this.selectedIndex;
 			const marker = isSelected ? theme.fg("accent", "→ ") : "  ";
 			const number = theme.fg("muted", `${i + 1}.`);
-			const label = isSelected ? theme.fg("accent", this.options[i]) : this.options[i];
+			const label = isSelected ? theme.fg("accent", this.options[i]) : chalk.white(this.options[i]);
 			this.listContainer.addChild(new Text(`  ${marker}${number} ${label}`, 1, 0));
 		}
 	}

@@ -22,28 +22,19 @@ function truncate(text: string, max: number): string {
 	return `${text.slice(0, max - 1)}…`;
 }
 
-function formatAskCall(args: { question?: string; options?: string[] } | undefined): string {
+function formatAskCall(args: { question?: string } | undefined): string {
 	const question = args?.question;
-	const options = args?.options;
-	const header = theme.fg("toolTitle", theme.bold("ask"));
 	if (!question) {
-		return header;
+		return theme.fg("toolTitle", theme.bold("ask"));
 	}
-	const lines: string[] = [];
-	lines.push(`${header} ${theme.fg("toolOutput", theme.italic(truncate(question, MAX_QUESTION_RENDER_WIDTH)))}`);
-	if (options && options.length > 0) {
-		for (let i = 0; i < options.length; i++) {
-			lines.push(theme.fg("muted", `  ${i + 1}. ${options[i]}`));
-		}
-	}
-	return lines.join("\n");
+	return `${theme.fg("toolTitle", theme.bold("ask"))} ${theme.fg("accent", theme.italic(truncate(question, MAX_QUESTION_RENDER_WIDTH)))}`;
 }
 
 function formatAskResult(content: Array<{ type: string; text?: string }> | undefined): string {
 	const textBlock = content?.find((c) => c.type === "text") as { type: "text"; text: string } | undefined;
 	const text = textBlock?.text;
 	if (!text) return theme.fg("muted", "(no answer)");
-	return theme.fg("toolOutput", text);
+	return theme.fg("accent", text);
 }
 
 type AskRenderState = Record<string, never>;
@@ -52,6 +43,7 @@ export function createAskToolDefinition(): ToolDefinition<typeof askSchema, unde
 	return {
 		name: "ask",
 		label: "ask",
+		renderShell: "self",
 		description:
 			"Present a question to the user with a set of options. The user either selects an option, types a custom answer, or cancels. Use this when you need user input to proceed (e.g., choices about implementation, confirmation of ambiguous intent, or selecting from alternatives).",
 		promptSnippet: "Present a question with options for the user to choose from",

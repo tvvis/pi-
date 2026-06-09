@@ -110,7 +110,7 @@ export const KEYBINDINGS = {
 	"app.session.new": { defaultKeys: [], description: "Start a new session" },
 	"app.session.tree": { defaultKeys: [], description: "Open session tree" },
 	"app.session.fork": { defaultKeys: [], description: "Fork current session" },
-	"app.session.resume": { defaultKeys: [], description: "Resume a session" },
+	"app.session.resume": { defaultKeys: "ctrl+r", description: "Resume a session" },
 	"app.tree.foldOrUp": {
 		defaultKeys: ["ctrl+left", "alt+left"],
 		description: "Fold tree branch or move up",

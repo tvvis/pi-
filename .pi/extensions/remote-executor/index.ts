@@ -1,10 +1,105 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { open, readFile, stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { Text } from "@earendil-works/pi-tui";
 import { ansibleExec, ansibleUpload, type ExecResult } from "./ansible.ts";
 import { highlightLine } from "./highlight.ts";
+
+// ---------------------------------------------------------------------------
+// file_upload guard: extensions / filenames that indicate executable content.
+// The prompt is the primary control; this set is a defense-in-depth check
+// inside the execute() function so a misbehaving caller cannot bypass the
+// non-executable restriction.
+// ---------------------------------------------------------------------------
+
+const SCRIPT_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".ksh",
+  ".csh",
+  ".fish",
+  ".py",
+  ".pyw",
+  ".pl",
+  ".pm",
+  ".rb",
+  ".lua",
+  ".php",
+  ".tcl",
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".tsx",
+  ".jsx",
+  ".bat",
+  ".cmd",
+  ".ps1",
+  ".exe",
+  ".bin",
+  ".run",
+]);
+
+const MAKEFILE_NAMES: ReadonlySet<string> = new Set([
+  "makefile",
+  "gnumakefile",
+  "bsdmakefile",
+]);
+
+function isMakefile(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (MAKEFILE_NAMES.has(lower)) return true;
+  return lower.endsWith(".mk") || lower.endsWith(".makefile");
+}
+
+// ---------------------------------------------------------------------------
+// MD5 helpers — used by file_upload to verify integrity end-to-end so the
+// agent never has to run a separate md5sum on either side.
+// ---------------------------------------------------------------------------
+
+function md5File(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("md5");
+    const stream = createReadStream(filePath);
+    stream.on("error", reject);
+    stream.on("data", (chunk) => {
+      hash.update(chunk);
+    });
+    stream.on("end", () => {
+      resolve(hash.digest("hex"));
+    });
+  });
+}
+
+interface RemoteMd5Result {
+  hash: string;
+  raw: string;
+}
+
+async function getRemoteMd5(
+  host: string,
+  remotePath: string,
+  signal?: AbortSignal,
+): Promise<RemoteMd5Result> {
+  const result = await ansibleExec(host, `md5sum ${remotePath}`, signal);
+  if (result.status !== 0) {
+    const stderr = result.stderr.trim();
+    const stdout = result.stdout.trim();
+    const detail = stderr || stdout || "(no output)";
+    throw new Error(`md5sum exited with status ${result.status}: ${detail}`);
+  }
+  const match = result.stdout.match(/^([a-fA-F0-9]{32})\s+/m);
+  if (!match) {
+    throw new Error(
+      `Could not parse md5sum output on remote: ${result.stdout.trim() || "(empty)"}`,
+    );
+  }
+  return { hash: match[1].toLowerCase(), raw: result.stdout.trim() };
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -412,6 +507,242 @@ export default function (pi: ExtensionAPI) {
       }
 
       return new Text(lines.join("\n"), 1, 0);
+    },
+  });
+
+  // -------------------------------------------------------------------------
+  // file_upload — uploads a NON-EXECUTABLE file from local cwd to a remote
+  // Ansible host. Strictly separated from run_script so scripts always go
+  // through the upload-and-execute path with assertion-based validation.
+  // -------------------------------------------------------------------------
+
+  pi.registerTool({
+    name: "file_upload",
+    label: "File Upload",
+    description:
+      "Upload a single NON-EXECUTABLE file (configs, data, certificates, static assets, etc.) from the local working directory to a remote Ansible host and automatically verify its integrity by computing the local MD5 and running `md5sum` on the remote host. The remote file is written as-is and is NOT executed. Scripts, interpreters, and any file that will be executed on the remote host MUST be uploaded via run_script instead — file_upload is not a substitute and will reject executable content.",
+    promptSnippet:
+      "Upload a single non-executable file to a remote Ansible host and verify its MD5 — never scripts",
+    promptGuidelines: [
+      "Use file_upload ONLY for non-executable files: configs (.conf, .yaml, .yml, .json, .ini, .toml, .xml, .properties), data files, certificates and keys (.pem, .crt, .key, .csr, .pub), static assets, templates, log archives, etc.",
+      "NEVER use file_upload for shell scripts, interpreted scripts, or any file that will be executed on the remote host. This includes files with extensions .sh, .bash, .zsh, .py, .pl, .rb, .lua, .php, .tcl, .js, .mjs, .cjs, .ts, .bat, .cmd, .ps1, executables, binaries, files with a #! shebang, and Makefiles. Such files MUST be uploaded via run_script — it is the only path that pairs the upload with execution and assertion-based validation.",
+      "file_upload must NEVER be used as a substitute for run_script to bypass the script-validator safety guarantees. If the file will run on the remote host, use run_script.",
+      "file_upload automatically computes the local MD5 and runs `md5sum` on the remote host to verify integrity end-to-end. The result line `MD5 verified: SUCCESS` or `MD5 verified: ERROR` is the source of truth — do NOT run a separate md5sum via run_script or local bash after upload; the verification is already part of file_upload.",
+      "Specify an explicit absolute remotePath. file_upload does not auto-pick a destination directory the way run_script does — non-executable files have no default home.",
+      "For multi-step remote work that needs both data and scripts, upload the data files with file_upload, then use run_script to upload and execute the script. Never embed large blobs in inline run_script commands.",
+    ],
+    renderShell: "self",
+    parameters: Type.Object({
+      host: Type.String({
+        description: "Ansible agent host",
+      }),
+      path: Type.String({
+        description:
+          "Path to the local non-executable file to upload (relative to the working directory). Files with script extensions, a #! shebang, or Makefiles are rejected.",
+      }),
+      remotePath: Type.String({
+        description:
+          "Absolute destination path on the remote host, e.g. /etc/nginx/nginx.conf",
+      }),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const host = params.host;
+      const localPath = resolve(ctx.cwd, params.path);
+      const remotePath = params.remotePath;
+
+      if (!remotePath.startsWith("/")) {
+        throw new Error(
+          `remotePath must be an absolute path on the remote host, got: ${remotePath}`,
+        );
+      }
+
+      // --- Defensive non-executable check (prompt is the primary control) ---
+      let fileStat;
+      try {
+        fileStat = await stat(localPath);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to stat source file: ${message}`);
+      }
+      if (!fileStat.isFile()) {
+        throw new Error(`Source is not a regular file: ${localPath}`);
+      }
+
+      const fileName = basename(localPath);
+      const lowerName = fileName.toLowerCase();
+      const dotIdx = lowerName.lastIndexOf(".");
+      const ext = dotIdx >= 0 ? lowerName.slice(dotIdx) : "";
+
+      if (SCRIPT_EXTENSIONS.has(ext)) {
+        throw new Error(
+          `Refusing to upload file with script extension '${ext}' via file_upload. Scripts must be uploaded (and executed) via run_script.`,
+        );
+      }
+      if (isMakefile(lowerName)) {
+        throw new Error(
+          `Refusing to upload Makefile via file_upload. Makefiles drive remote execution; use run_script for any file that is meant to run on the remote host.`,
+        );
+      }
+
+      // Shebang check — read only the first 2 bytes.
+      let head = Buffer.alloc(0);
+      try {
+        const fh = await open(localPath, "r");
+        try {
+          const buf = Buffer.alloc(2);
+          await fh.read(buf, 0, 2, 0);
+          head = buf;
+        } finally {
+          await fh.close();
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to read source file header: ${message}`);
+      }
+      if (head.length >= 2 && head[0] === 0x23 && head[1] === 0x21) {
+        throw new Error(
+          `Refusing to upload file with a '#!' shebang via file_upload. Scripts must be uploaded (and executed) via run_script.`,
+        );
+      }
+
+      // --- Upload (explicit if-else: throw on failure, run MD5 only on success) ---
+      let uploadError: string | null = null;
+      try {
+        await ansibleUpload(host, localPath, remotePath, signal);
+      } catch (err) {
+        uploadError = err instanceof Error ? err.message : String(err);
+      }
+
+      if (uploadError) {
+        throw new Error(`Upload failed: ${uploadError}`);
+      }
+
+      // --- MD5 verification (gated: only reached when upload succeeded) ---
+      let localMd5: string;
+      try {
+        localMd5 = await md5File(localPath);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`MD5 verification failed (local): ${message}`);
+      }
+
+      let remoteMd5 = "";
+      let remoteMd5Error: string | undefined;
+      try {
+        const r = await getRemoteMd5(host, remotePath, signal);
+        remoteMd5 = r.hash;
+      } catch (err) {
+        remoteMd5Error =
+          err instanceof Error ? err.message : String(err);
+      }
+
+      const md5Verified = remoteMd5 !== "" && localMd5 === remoteMd5;
+      const md5verifiedLine = remoteMd5Error
+        ? `MD5 verified: ERROR   (${remoteMd5Error})`
+        : md5Verified
+          ? `MD5 verified: SUCCESS`
+          : `MD5 verified: ERROR   local=${localMd5} remote=${remoteMd5}`;
+
+      // MD5 mismatch / md5sum failure: drop Size, the actionable signal is
+      // the mismatch reason and the FAILED result.
+      const output = md5Verified
+        ? [
+            `Size:    ${fileStat.size} bytes`,
+            md5verifiedLine,
+            `Result:  SUCCESS`,
+          ].join("\n")
+        : [md5verifiedLine, `Result:  FAILED`].join("\n");
+
+      return {
+        content: [{ type: "text", text: output }],
+        details: {
+          host,
+          localPath,
+          remotePath,
+          size: fileStat.size,
+          md5: localMd5,
+          md5Verified,
+          remoteMd5: remoteMd5 || undefined,
+          remoteMd5Error,
+        },
+      };
+    },
+
+    renderCall(args, theme, context) {
+      const host = String(args.host ?? "");
+      // Resolve the local path against the working directory so the call
+      // line shows the full absolute path that execute() will actually
+      // upload, not the user-supplied (possibly relative) argument.
+      const localPath = resolve(context.cwd, String(args.path ?? ""));
+      const remotePath = String(args.remotePath ?? "");
+      // Fixed color map: host accent, labels dim, paths plain. Local/Remote
+      // labels live next to their paths so the call line is self-describing.
+      const text =
+        theme.fg("toolTitle", theme.bold("file_upload")) +
+        theme.fg("dim", " → ") +
+        theme.fg("accent", host) +
+        " " +
+        theme.fg("dim", "Local:") +
+        " " +
+        theme.fg("text", localPath) +
+        theme.fg("dim", " → ") +
+        theme.fg("dim", "Remote:") +
+        " " +
+        theme.fg("text", remotePath);
+      return new Text(text, 1, 0);
+    },
+
+    renderResult(result, _options, theme) {
+      const details = result.details as
+        | {
+            host: string;
+            localPath: string;
+            remotePath: string;
+            size: number;
+            md5: string;
+            md5Verified: boolean;
+            remoteMd5?: string;
+            remoteMd5Error?: string;
+          }
+        | undefined;
+
+      if (!details || !details.host) {
+        // Error path: execute() threw. The framework wraps the thrown
+        // error into a result with `details: {}` (not undefined) — see
+        // packages/agent/src/agent-loop.ts `createErrorToolResult`. We
+        // must also treat that empty-object case as a failure, otherwise
+        // the MD5 mismatch branch would read `details.md5` / `details
+        // .remoteMd5` as undefined and render "local=undefined remote=?".
+        const text = result.content[0];
+        const raw = text?.type === "text" ? text.text.trim() : "";
+        const inline = raw
+          ? `${theme.fg("error", "Result: FAILED")}  ${theme.fg("error", raw)}`
+          : `${theme.fg("error", "Result: FAILED")}`;
+        return new Text(inline, 0, 0);
+      }
+
+      // MD5 mismatch / md5sum failure: upload reached the remote but the
+      // bytes are not trustworthy. Collapse to the failure reason and a
+      // red Result: FAILED — drop Size, it is not the actionable signal.
+      if (!details.md5Verified) {
+        const verifiedLabel = details.remoteMd5Error
+          ? `ERROR   (${details.remoteMd5Error})`
+          : `ERROR   local=${details.md5} remote=${details.remoteMd5 ?? "?"}`;
+        const lines = [
+          `${theme.fg("dim", "MD5 verified:")} ${theme.fg("error", verifiedLabel)}`,
+          `${theme.fg("dim", "Result:")}  ${theme.fg("error", "FAILED")}`,
+        ];
+        return new Text(lines.join("\n"), 0, 0);
+      }
+
+      // All good: upload succeeded, MD5 matches.
+      const lines: string[] = [
+        `${theme.fg("dim", "Size:")}    ${details.size} bytes`,
+        `${theme.fg("dim", "MD5 verified:")} ${theme.fg("success", "SUCCESS")}`,
+        `${theme.fg("dim", "Result:")}  ${theme.fg("success", "SUCCESS")}`,
+      ];
+
+      return new Text(lines.join("\n"), 0, 0);
     },
   });
 }

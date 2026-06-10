@@ -28,8 +28,10 @@ export async function ansibleExec(
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`ansible-exec HTTP ${res.status}: ${text}`);
+    const text = (await res.text()).trim();
+    throw new Error(
+      text ? `ansible-exec HTTP ${res.status}: ${text}` : `ansible-exec HTTP ${res.status}`,
+    );
   }
 
   const json = (await res.json()) as Record<string, unknown>;
@@ -60,8 +62,10 @@ export async function ansibleUpload(
     signal,
   });
 
-  const text = await res.text();
+  const text = (await res.text()).trim();
   if (!res.ok || !text.includes("SUCCESS")) {
-    throw new Error(`ansible-upload HTTP ${res.status}: ${text}`);
+    throw new Error(
+      text ? `ansible-upload HTTP ${res.status}: ${text}` : `ansible-upload HTTP ${res.status}`,
+    );
   }
 }

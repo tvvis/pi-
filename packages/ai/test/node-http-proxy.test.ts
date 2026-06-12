@@ -40,16 +40,16 @@ describe("node HTTP proxy resolution", () => {
 	it("respects NO_PROXY exclusions", () => {
 		resetProxyEnv();
 		process.env.HTTPS_PROXY = "http://proxy.example:8080";
-		process.env.NO_PROXY = "bedrock-runtime.us-east-1.amazonaws.com";
+		process.env.NO_PROXY = "nonexistent.example.com";
 
-		expect(resolveHttpProxyUrlForTarget("https://bedrock-runtime.us-east-1.amazonaws.com")).toBeUndefined();
+		expect(resolveHttpProxyUrlForTarget("https://nonexistent.example.com")).toBeUndefined();
 	});
 
 	it("resolves HTTP and HTTPS proxy URLs", () => {
 		resetProxyEnv();
 		process.env.HTTPS_PROXY = "http://proxy.example:8080";
 
-		expect(resolveHttpProxyUrlForTarget("https://bedrock-runtime.us-east-1.amazonaws.com")?.toString()).toBe(
+		expect(resolveHttpProxyUrlForTarget("https://nonexistent.example.com")?.toString()).toBe(
 			"http://proxy.example:8080/",
 		);
 	});
@@ -58,7 +58,7 @@ describe("node HTTP proxy resolution", () => {
 		resetProxyEnv();
 		process.env.HTTPS_PROXY = "socks5://proxy.example:1080";
 
-		expect(() => resolveHttpProxyUrlForTarget("https://bedrock-runtime.us-east-1.amazonaws.com")).toThrow(
+		expect(() => resolveHttpProxyUrlForTarget("https://nonexistent.example.com")).toThrow(
 			UNSUPPORTED_PROXY_PROTOCOL_MESSAGE,
 		);
 	});

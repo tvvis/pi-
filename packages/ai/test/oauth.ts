@@ -1,93 +1,55 @@
 /**
- * Test helper for resolving API keys from ~/.pi/agent/auth.json
+ * API key resolution for tests.
+ * Supports both direct env vars and credentials from ~/.pi/agent/auth.json.
  *
- * Supports both API key and OAuth credentials.
- * OAuth tokens are automatically refreshed if expired and saved back to auth.json.
- */
-
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { homedir } from "os";
-import { dirname, join } from "path";
-import { getOAuthApiKey } from "../src/utils/oauth/index.ts";
-import type { OAuthCredentials, OAuthProvider } from "../src/utils/oauth/types.ts";
-
-const AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
-
-type ApiKeyCredential = {
-	type: "api_key";
-	key: string;
-};
-
-type OAuthCredentialEntry = {
-	type: "oauth";
-} & OAuthCredentials;
-
-type AuthCredential = ApiKeyCredential | OAuthCredentialEntry;
-
-type AuthStorage = Record<string, AuthCredential>;
-
-function loadAuthStorage(): AuthStorage {
-	if (!existsSync(AUTH_PATH)) {
-		return {};
-	}
-	try {
-		const content = readFileSync(AUTH_PATH, "utf-8");
-		return JSON.parse(content);
-	} catch {
-		return {};
-	}
-}
-
-function saveAuthStorage(storage: AuthStorage): void {
-	const configDir = dirname(AUTH_PATH);
-	if (!existsSync(configDir)) {
-		mkdirSync(configDir, { recursive: true, mode: 0o700 });
-	}
-	writeFileSync(AUTH_PATH, JSON.stringify(storage, null, 2), "utf-8");
-	chmodSync(AUTH_PATH, 0o600);
-}
-
-/**
- * Resolve API key for a provider from ~/.pi/agent/auth.json
- *
- * For API key credentials, returns the key directly.
- * For OAuth credentials, returns the access token (refreshing if expired and saving back).
- *
+ * @deprecated OAuth support has been removed. This helper only resolves
+ *             credentials stored in auth.json (API key entries).
+ *             Use process.env directly for tests.
  */
 export async function resolveApiKey(provider: string): Promise<string | undefined> {
-	const storage = loadAuthStorage();
-	const entry = storage[provider];
-
-	if (!entry) return undefined;
-
-	if (entry.type === "api_key") {
-		return entry.key;
+	// Check env vars first
+	const envKey = getApiKeyEnvVar(provider);
+	if (envKey && process.env[envKey]) {
+		return process.env[envKey];
 	}
 
-	if (entry.type === "oauth") {
-		// Build OAuthCredentials record for getOAuthApiKey
-		const oauthCredentials: Record<string, OAuthCredentials> = {};
-		for (const [key, value] of Object.entries(storage)) {
-			if (value.type === "oauth") {
-				const { type: _, ...creds } = value;
-				oauthCredentials[key] = creds;
+	// Check auth.json for stored API keys
+	try {
+		const { homedir } = await import("os");
+		const { join } = await import("path");
+		const { existsSync, readFileSync } = await import("fs");
+		const authPath = join(homedir(), ".pi", "agent", "auth.json");
+		if (existsSync(authPath)) {
+			const auth = JSON.parse(readFileSync(authPath, "utf-8"));
+			const entry = auth[provider];
+			if (entry?.type === "api_key" && entry.key) {
+				return entry.key;
 			}
 		}
-
-		let result: { newCredentials: OAuthCredentials; apiKey: string } | null = null;
-		try {
-			result = await getOAuthApiKey(provider as OAuthProvider, oauthCredentials);
-		} catch (e) {
-			console.log(JSON.stringify(e));
-		}
-		if (!result) return undefined;
-
-		// Save refreshed credentials back to auth.json
-		storage[provider] = { type: "oauth", ...result.newCredentials };
-		saveAuthStorage(storage);
-
-		return result.apiKey;
+	} catch {
+		// Ignore
 	}
 
 	return undefined;
+}
+
+function getApiKeyEnvVar(provider: string): string | undefined {
+	const map: Record<string, string> = {
+		anthropic: "ANTHROPIC_API_KEY",
+		openai: "OPENAI_API_KEY",
+		"azure-openai-responses": "AZURE_OPENAI_API_KEY",
+		deepseek: "DEEPSEEK_API_KEY",
+		groq: "GROQ_API_KEY",
+		cerebras: "CEREBRAS_API_KEY",
+		xai: "XAI_API_KEY",
+		minimax: "MINIMAX_API_KEY",
+		moonshotai: "MOONSHOT_API_KEY",
+		huggingface: "HF_TOKEN",
+		fireworks: "FIREWORKS_API_KEY",
+		together: "TOGETHER_API_KEY",
+		opencode: "OPENCODE_API_KEY",
+		"github-copilot": "COPILOT_GITHUB_TOKEN",
+		"openai-codex": "OPENAI_CODEX_API_KEY",
+	};
+	return map[provider];
 }

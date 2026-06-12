@@ -11,14 +11,12 @@ import {
 	getProviders,
 	type KnownProvider,
 	type Model,
-	type OAuthProviderInterface,
 	type OpenAICompletionsCompat,
 	type OpenAIResponsesCompat,
 	registerApiProvider,
 	resetApiProviders,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { type Static, Type } from "typebox";
@@ -42,49 +40,11 @@ import {
 } from "./resolve-config-value.ts";
 
 // Schema for OpenRouter routing preferences
-const PercentileCutoffsSchema = Type.Object({
+const _PercentileCutoffsSchema = Type.Object({
 	p50: Type.Optional(Type.Number()),
 	p75: Type.Optional(Type.Number()),
 	p90: Type.Optional(Type.Number()),
 	p99: Type.Optional(Type.Number()),
-});
-
-const OpenRouterRoutingSchema = Type.Object({
-	allow_fallbacks: Type.Optional(Type.Boolean()),
-	require_parameters: Type.Optional(Type.Boolean()),
-	data_collection: Type.Optional(Type.Union([Type.Literal("deny"), Type.Literal("allow")])),
-	zdr: Type.Optional(Type.Boolean()),
-	enforce_distillable_text: Type.Optional(Type.Boolean()),
-	order: Type.Optional(Type.Array(Type.String())),
-	only: Type.Optional(Type.Array(Type.String())),
-	ignore: Type.Optional(Type.Array(Type.String())),
-	quantizations: Type.Optional(Type.Array(Type.String())),
-	sort: Type.Optional(
-		Type.Union([
-			Type.String(),
-			Type.Object({
-				by: Type.Optional(Type.String()),
-				partition: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-			}),
-		]),
-	),
-	max_price: Type.Optional(
-		Type.Object({
-			prompt: Type.Optional(Type.Union([Type.Number(), Type.String()])),
-			completion: Type.Optional(Type.Union([Type.Number(), Type.String()])),
-			image: Type.Optional(Type.Union([Type.Number(), Type.String()])),
-			audio: Type.Optional(Type.Union([Type.Number(), Type.String()])),
-			request: Type.Optional(Type.Union([Type.Number(), Type.String()])),
-		}),
-	),
-	preferred_min_throughput: Type.Optional(Type.Union([Type.Number(), PercentileCutoffsSchema])),
-	preferred_max_latency: Type.Optional(Type.Union([Type.Number(), PercentileCutoffsSchema])),
-});
-
-// Schema for Vercel AI Gateway routing preferences
-const VercelGatewayRoutingSchema = Type.Object({
-	only: Type.Optional(Type.Array(Type.String())),
-	order: Type.Optional(Type.Array(Type.String())),
 });
 
 // Schema for thinking level support and provider-specific values
@@ -111,7 +71,6 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	thinkingFormat: Type.Optional(
 		Type.Union([
 			Type.Literal("openai"),
-			Type.Literal("openrouter"),
 			Type.Literal("together"),
 			Type.Literal("deepseek"),
 			Type.Literal("zai"),
@@ -120,8 +79,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
 		]),
 	),
 	cacheControlFormat: Type.Optional(Type.Literal("anthropic")),
-	openRouterRouting: Type.Optional(OpenRouterRoutingSchema),
-	vercelGatewayRouting: Type.Optional(VercelGatewayRoutingSchema),
+
 	supportsStrictMode: Type.Optional(Type.Boolean()),
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
 });
@@ -342,23 +300,9 @@ function mergeCompat(
 	const override = overrideCompat as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat;
 	const merged = { ...base, ...override } as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat;
 
-	const baseCompletions = base as OpenAICompletionsCompat | undefined;
-	const overrideCompletions = override as OpenAICompletionsCompat;
-	const mergedCompletions = merged as OpenAICompletionsCompat;
-
-	if (baseCompletions?.openRouterRouting || overrideCompletions.openRouterRouting) {
-		mergedCompletions.openRouterRouting = {
-			...baseCompletions?.openRouterRouting,
-			...overrideCompletions.openRouterRouting,
-		};
-	}
-
-	if (baseCompletions?.vercelGatewayRouting || overrideCompletions.vercelGatewayRouting) {
-		mergedCompletions.vercelGatewayRouting = {
-			...baseCompletions?.vercelGatewayRouting,
-			...overrideCompletions.vercelGatewayRouting,
-		};
-	}
+	const _baseCompletions = base as OpenAICompletionsCompat | undefined;
+	const _overrideCompletions = override as OpenAICompletionsCompat;
+	const _mergedCompletions = merged as OpenAICompletionsCompat;
 
 	return merged as Model<Api>["compat"];
 }
@@ -433,9 +377,7 @@ export class ModelRegistry {
 		this.modelRequestHeaders.clear();
 		this.loadError = undefined;
 
-		// Ensure dynamic API/OAuth registrations are rebuilt from current provider state.
 		resetApiProviders();
-		resetOAuthProviders();
 
 		this.loadModels();
 
@@ -466,15 +408,7 @@ export class ModelRegistry {
 		}
 
 		const builtInModels = this.loadBuiltInModels(overrides, modelOverrides);
-		let combined = this.mergeCustomModels(builtInModels, customModels);
-
-		// Let OAuth providers modify their models (e.g., update baseUrl)
-		for (const oauthProvider of this.authStorage.getOAuthProviders()) {
-			const cred = this.authStorage.get(oauthProvider.id);
-			if (cred?.type === "oauth" && oauthProvider.modifyModels) {
-				combined = oauthProvider.modifyModels(combined, cred);
-			}
-		}
+		const combined = this.mergeCustomModels(builtInModels, customModels);
 
 		this.models = combined;
 	}
@@ -828,15 +762,7 @@ export class ModelRegistry {
 	 */
 	getProviderDisplayName(provider: string): string {
 		const registeredProvider = this.registeredProviders.get(provider);
-		const oauthProvider = this.authStorage.getOAuthProviders().find((p) => p.id === provider);
-
-		return (
-			registeredProvider?.name ??
-			registeredProvider?.oauth?.name ??
-			oauthProvider?.name ??
-			BUILT_IN_PROVIDER_DISPLAY_NAMES[provider] ??
-			provider
-		);
+		return registeredProvider?.name ?? BUILT_IN_PROVIDER_DISPLAY_NAMES[provider] ?? provider;
 	}
 
 	/**
@@ -855,9 +781,8 @@ export class ModelRegistry {
 	/**
 	 * Check if a model is using OAuth credentials (subscription).
 	 */
-	isUsingOAuth(model: Model<Api>): boolean {
-		const cred = this.authStorage.get(model.provider);
-		return cred?.type === "oauth";
+	isUsingOAuth(_model: Model<Api>): boolean {
+		return false;
 	}
 
 	/**
@@ -920,8 +845,8 @@ export class ModelRegistry {
 		if (!config.baseUrl) {
 			throw new Error(`Provider ${providerName}: "baseUrl" is required when defining models.`);
 		}
-		if (!config.apiKey && !config.oauth) {
-			throw new Error(`Provider ${providerName}: "apiKey" or "oauth" is required when defining models.`);
+		if (!config.apiKey) {
+			throw new Error(`Provider ${providerName}: "apiKey" is required when defining models.`);
 		}
 
 		for (const modelDef of config.models) {
@@ -933,16 +858,6 @@ export class ModelRegistry {
 	}
 
 	private applyProviderConfig(providerName: string, config: ProviderConfigInput): void {
-		// Register OAuth provider if provided
-		if (config.oauth) {
-			// Ensure the OAuth provider ID matches the provider name
-			const oauthProvider: OAuthProviderInterface = {
-				...config.oauth,
-				id: providerName,
-			};
-			registerOAuthProvider(oauthProvider);
-		}
-
 		if (config.streamSimple) {
 			const streamSimple = config.streamSimple;
 			registerApiProvider(
@@ -982,14 +897,6 @@ export class ModelRegistry {
 					compat: modelDef.compat,
 				} as Model<Api>);
 			}
-
-			// Apply OAuth modifyModels if credentials exist (e.g., to update baseUrl)
-			if (config.oauth?.modifyModels) {
-				const cred = this.authStorage.get(providerName);
-				if (cred?.type === "oauth") {
-					this.models = config.oauth.modifyModels(this.models, cred);
-				}
-			}
 		} else if (config.baseUrl || config.headers) {
 			// Override-only: update baseUrl for existing models. Request headers are resolved per request.
 			this.models = this.models.map((m) => {
@@ -1014,8 +921,6 @@ export interface ProviderConfigInput {
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	headers?: Record<string, string>;
 	authHeader?: boolean;
-	/** OAuth provider for /login support */
-	oauth?: Omit<OAuthProviderInterface, "id">;
 	models?: Array<{
 		id: string;
 		name: string;

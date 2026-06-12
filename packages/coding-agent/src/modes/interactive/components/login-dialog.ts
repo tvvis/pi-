@@ -1,4 +1,3 @@
-import { getOAuthProviders, type OAuthDeviceCodeInfo } from "@earendil-works/pi-ai/oauth";
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { exec } from "child_process";
 import { theme } from "../theme/theme.ts";
@@ -38,8 +37,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.tui = tui;
 		this.onComplete = onComplete;
 
-		const providerInfo = getOAuthProviders().find((p) => p.id === providerId);
-		const providerName = providerNameOverride || providerInfo?.name || providerId;
+		const providerName = providerNameOverride || providerId;
 		const title = titleOverride ?? `Login to ${providerName}`;
 
 		// Top border
@@ -108,7 +106,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	/**
 	 * Called by onDeviceCode callback - show URL and user code.
 	 */
-	showDeviceCode(info: OAuthDeviceCodeInfo): void {
+	showDeviceCode(info: { verificationUri: string; userCode: string }): void {
 		this.contentContainer.clear();
 		this.contentContainer.addChild(new Spacer(1));
 		const linkedUrl = `\x1b]8;;${info.verificationUri}\x07${info.verificationUri}\x1b]8;;\x07`;

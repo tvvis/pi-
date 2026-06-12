@@ -144,14 +144,6 @@ function getAttributionHeaders(
 		return undefined;
 	}
 
-	if (model.provider === "openrouter" || model.baseUrl.includes("openrouter.ai")) {
-		return {
-			"HTTP-Referer": "https://pi.dev",
-			"X-OpenRouter-Title": "pi",
-			"X-OpenRouter-Categories": "cli-agent",
-		};
-	}
-
 	if (
 		model.provider === "cloudflare-workers-ai" ||
 		model.provider === "cloudflare-ai-gateway" ||

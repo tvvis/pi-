@@ -19,12 +19,12 @@ export {
 export {
 	type ApiKeyCredential,
 	type AuthCredential,
+	type AuthCredential as OAuthCredential,
 	type AuthStatus,
 	AuthStorage,
 	type AuthStorageBackend,
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
-	type OAuthCredential,
 } from "./core/auth-storage.ts";
 // Compaction
 export {

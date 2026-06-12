@@ -88,7 +88,7 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
-import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import { type BuildSystemPromptOptions, buildSystemPrompt, resolveModelAppendSystemPrompts } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
@@ -811,7 +811,16 @@ export class AgentSession {
 		this.agent.state.tools = tools;
 
 		// Rebuild base system prompt with new tool set
-		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
+		this._refreshBaseSystemPrompt();
+	}
+
+	/**
+	 * Rebuild the base system prompt (against the current model) and push it
+	 * into agent state. Use whenever model, tools, or model-conditional
+	 * settings may have changed.
+	 */
+	private _refreshBaseSystemPrompt(): void {
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 		this.agent.state.systemPrompt = this._baseSystemPrompt;
 	}
 
@@ -911,8 +920,18 @@ export class AgentSession {
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
-		const appendSystemPrompt =
-			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
+		const modelAppendFragments = resolveModelAppendSystemPrompts(
+			this.model,
+			this.settingsManager.getModelAppendSystemPrompts(),
+		);
+		const appendParts: string[] = [];
+		if (loaderAppendSystemPrompt.length > 0) {
+			appendParts.push(loaderAppendSystemPrompt.join("\n\n"));
+		}
+		if (modelAppendFragments.length > 0) {
+			appendParts.push(modelAppendFragments.join("\n\n"));
+		}
+		const appendSystemPrompt = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
@@ -1453,6 +1472,9 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 
+		// Rebuild base system prompt: model-conditional appends may differ for the new model.
+		this._refreshBaseSystemPrompt();
+
 		await this._emitModelSelect(model, previousModel, "set");
 	}
 
@@ -1493,6 +1515,9 @@ export class AgentSession {
 		// setThinkingLevel clamps to model capabilities.
 		this.setThinkingLevel(thinkingLevel);
 
+		// Rebuild base system prompt: model-conditional appends may differ for the new model.
+		this._refreshBaseSystemPrompt();
+
 		await this._emitModelSelect(next.model, currentModel, "cycle");
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
@@ -1517,6 +1542,9 @@ export class AgentSession {
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
+
+		// Rebuild base system prompt: model-conditional appends may differ for the new model.
+		this._refreshBaseSystemPrompt();
 
 		await this._emitModelSelect(nextModel, currentModel, "cycle");
 
@@ -2109,8 +2137,7 @@ export class AgentSession {
 		};
 
 		this._resourceLoader.extendResources(extensionPaths);
-		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this._refreshBaseSystemPrompt();
 	}
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{

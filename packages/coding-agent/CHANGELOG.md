@@ -8,6 +8,8 @@
 - Added `ctx.mode` to extension contexts so extensions can distinguish TUI, RPC, JSON, and print mode.
 - Added `hideStartupExtras` setting to hide the model scope line, keybinding hints, and onboarding tips at startup while still showing the version line.
 - Added `examples/extensions/per-model-compaction.ts`: a per-model auto-compaction extension that triggers on a configurable context-window ratio (e.g. 0.4 for `minimax-cn/*`, 0.2 for `deepseek/*`) and prompts the user to compress, start a new session, or continue, configured under `perModelCompaction` in `settings.json`. Suppresses the prompt until the first `turn_start` after a model switch.
+- Added `npm run build:fast` at both the repo root and `packages/coding-agent` to build the Bun-compiled single-file binary (`packages/coding-agent/dist/pi`). Use this in place of `npm run build` for day-to-day development: ~0.5s startup vs. ~20s for the Node.js `dist/cli.js` script. The `build:binary` script remains as the underlying implementation; `build:fast` is the recommended alias.
+- Added `modelAppendSystemPrompts` setting: a map of model glob pattern (minimatch, case-insensitive, matched against `provider/modelId` and `modelId`) to a system prompt fragment appended after the default prompt and any regular `APPEND_SYSTEM.md` / `--append-system-prompt` content. Values follow the existing convention: a file path is read, otherwise the string is used verbatim. Multiple matching entries are appended in insertion order. The base system prompt is rebuilt when the active model changes.
 
 ### Changed
 

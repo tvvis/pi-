@@ -175,6 +175,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enabledModels` | string[] | - | Model patterns for Ctrl+P cycling (same format as `--models` CLI flag) |
+| `modelAppendSystemPrompts` | object | - | Map of model glob pattern to a system prompt fragment appended when the active model matches. See [Model-Conditional System Prompts](usage.md#model-conditional-system-prompts). |
 
 ```json
 {

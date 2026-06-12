@@ -2,6 +2,9 @@
  * System prompt construction and project context loading
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import type { Model } from "@earendil-works/pi-ai";
+import { minimatch } from "minimatch";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
@@ -170,4 +173,52 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 	prompt += `\nCurrent working directory: ${promptCwd}`;
 
 	return prompt;
+}
+
+/**
+ * Resolve a user-provided prompt fragment: if `value` points to an existing
+ * file, read its contents; otherwise return the string verbatim. Matches the
+ * convention used by `--append-system-prompt` and `APPEND_SYSTEM.md`.
+ */
+export function resolvePromptInput(value: string): string {
+	if (existsSync(value)) {
+		try {
+			return readFileSync(value, "utf-8");
+		} catch {
+			return value;
+		}
+	}
+	return value;
+}
+
+/**
+ * Resolve model-conditional system prompt appends against the given model.
+ *
+ * Each entry in `map` is a pattern (minimatch glob, case-insensitive) mapping
+ * to a prompt fragment. Patterns are matched against `provider/modelId` and
+ * `modelId`. Values follow the `resolvePromptInput` convention (file path is
+ * read, otherwise the string is used verbatim).
+ *
+ * Returns the resolved fragments in insertion order. Patterns that do not
+ * match the model, or whose value is empty/non-string, are skipped.
+ */
+export function resolveModelAppendSystemPrompts(
+	model: Model<any> | undefined,
+	map: Record<string, string> | undefined,
+): string[] {
+	if (!model || !map) {
+		return [];
+	}
+	const fullId = `${model.provider}/${model.id}`;
+	const fragments: string[] = [];
+	for (const [pattern, value] of Object.entries(map)) {
+		if (typeof value !== "string" || value.length === 0) {
+			continue;
+		}
+		if (!minimatch(fullId, pattern, { nocase: true }) && !minimatch(model.id, pattern, { nocase: true })) {
+			continue;
+		}
+		fragments.push(resolvePromptInput(value));
+	}
+	return fragments;
 }

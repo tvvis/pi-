@@ -103,6 +103,13 @@ export interface Settings {
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
+	/**
+	 * Map of model glob pattern to an extra system prompt fragment to append for that model.
+	 * Patterns are matched (case-insensitive minimatch) against `provider/modelId` and `modelId`.
+	 * Values follow the same convention as `--append-system-prompt`: a file path is read, otherwise the string is used verbatim.
+	 * All matching entries are appended (in insertion order) after any regular append system prompt, before project context / skills / date.
+	 */
+	modelAppendSystemPrompts?: Record<string, string>;
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
@@ -1026,6 +1033,16 @@ export class SettingsManager {
 
 	getEnabledModels(): string[] | undefined {
 		return this.settings.enabledModels;
+	}
+
+	getModelAppendSystemPrompts(): Record<string, string> | undefined {
+		return this.settings.modelAppendSystemPrompts;
+	}
+
+	setModelAppendSystemPrompts(map: Record<string, string> | undefined): void {
+		this.globalSettings.modelAppendSystemPrompts = map;
+		this.markModified("modelAppendSystemPrompts");
+		this.save();
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {

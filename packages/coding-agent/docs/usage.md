@@ -110,6 +110,20 @@ Replace the default system prompt with:
 
 Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location.
 
+### Model-Conditional System Prompts
+
+Use `modelAppendSystemPrompts` in `settings.json` to inject extra guidance that is only added when the active model matches a pattern. Patterns are minimatch globs matched case-insensitively against `provider/modelId` and `modelId`. Values follow the same convention as `--append-system-prompt` / `APPEND_SYSTEM.md`: if the string is an existing file path, its contents are read; otherwise the string is used verbatim. All matching entries are appended (in insertion order) after any global `APPEND_SYSTEM.md` / `--append-system-prompt` content, before project context, skills, and the date footer. The base system prompt is rebuilt when the active model changes (e.g. via `setModel` or Ctrl+P cycling).
+
+```json
+{
+  "modelAppendSystemPrompts": {
+    "claude-*": "~/.pi/agent/fragments/claude.md",
+    "*-opus-*": "Prefer concise replies; avoid preambles.",
+    "gpt-4o*": "Use Markdown tables when comparing options."
+  }
+}
+```
+
 ## Exporting and Sharing Sessions
 
 Use `/export [file]` to write a session to HTML.

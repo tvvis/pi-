@@ -5,26 +5,15 @@ export type { AssistantMessageEventStream } from "./utils/event-stream.ts";
 
 export type KnownApi =
 	| "openai-completions"
-	| "mistral-conversations"
 	| "openai-responses"
 	| "azure-openai-responses"
 	| "openai-codex-responses"
-	| "anthropic-messages"
-	| "bedrock-converse-stream"
-	| "google-generative-ai"
-	| "google-vertex";
+	| "anthropic-messages";
 
 export type Api = KnownApi | (string & {});
 
-export type KnownImagesApi = "openrouter-images";
-
-export type ImagesApi = KnownImagesApi | (string & {});
-
 export type KnownProvider =
-	| "amazon-bedrock"
 	| "anthropic"
-	| "google"
-	| "google-vertex"
 	| "openai"
 	| "azure-openai-responses"
 	| "openai-codex"
@@ -33,10 +22,7 @@ export type KnownProvider =
 	| "xai"
 	| "groq"
 	| "cerebras"
-	| "openrouter"
-	| "vercel-ai-gateway"
 	| "zai"
-	| "mistral"
 	| "minimax"
 	| "minimax-cn"
 	| "moonshotai"
@@ -54,10 +40,6 @@ export type KnownProvider =
 	| "xiaomi-token-plan-ams"
 	| "xiaomi-token-plan-sgp";
 export type Provider = KnownProvider | string;
-
-export type KnownImagesProvider = "openrouter";
-
-export type ImagesProvider = KnownImagesProvider | string;
 
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type ModelThinkingLevel = "off" | ThinkingLevel;
@@ -115,9 +97,6 @@ export interface StreamOptions {
 	/**
 	 * Optional custom HTTP headers to include in API requests.
 	 * Merged with provider defaults; caller values override default headers.
-	 * On AWS Bedrock these are injected via a Smithy `build`-step middleware so
-	 * they are covered by SigV4 signing; reserved headers (`x-amz-*`,
-	 * `authorization`, `host`) are silently ignored to preserve SigV4 / bearer auth.
 	 */
 	headers?: Record<string, string>;
 	/**
@@ -154,48 +133,6 @@ export interface StreamOptions {
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
 
-export interface ImagesOptions {
-	signal?: AbortSignal;
-	apiKey?: string;
-	/**
-	 * Optional callback for inspecting or replacing provider payloads before sending.
-	 * Return undefined to keep the payload unchanged.
-	 */
-	onPayload?: (payload: unknown, model: ImagesModel<ImagesApi>) => unknown | undefined | Promise<unknown | undefined>;
-	/**
-	 * Optional callback invoked after an HTTP response is received.
-	 */
-	onResponse?: (response: ProviderResponse, model: ImagesModel<ImagesApi>) => void | Promise<void>;
-	/**
-	 * Optional custom HTTP headers to include in API requests.
-	 * Merged with provider defaults; can override default headers.
-	 */
-	headers?: Record<string, string>;
-	/**
-	 * HTTP request timeout in milliseconds for providers/SDKs that support it.
-	 */
-	timeoutMs?: number;
-	/**
-	 * Maximum retry attempts for providers/SDKs that support client-side retries.
-	 */
-	maxRetries?: number;
-	/**
-	 * Maximum delay in milliseconds to wait for a retry when the server requests a long wait.
-	 * If the server's requested delay exceeds this value, the request fails immediately
-	 * with an error containing the requested delay, allowing higher-level retry logic
-	 * to handle it with user visibility.
-	 * Default: 60000 (60 seconds). Set to 0 to disable the cap.
-	 */
-	maxRetryDelayMs?: number;
-	/**
-	 * Optional metadata to include in API requests.
-	 * Providers extract the fields they understand and ignore the rest.
-	 */
-	metadata?: Record<string, unknown>;
-}
-
-export type ProviderImagesOptions = ImagesOptions & Record<string, unknown>;
-
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
@@ -216,12 +153,6 @@ export type StreamFunction<TApi extends Api = Api, TOptions extends StreamOption
 	context: Context,
 	options?: TOptions,
 ) => AssistantMessageEventStream;
-
-export type ImagesFunction<TApi extends ImagesApi = ImagesApi, TOptions extends ImagesOptions = ImagesOptions> = (
-	model: ImagesModel<TApi>,
-	context: ImagesContext,
-	options?: TOptions,
-) => Promise<AssistantImages>;
 
 export interface TextSignatureV1 {
 	v: 1;
@@ -309,27 +240,6 @@ export interface ToolResultMessage<TDetails = any> {
 
 export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
-export type ImagesInputContent = TextContent | ImageContent;
-export type ImagesOutputContent = TextContent | ImageContent;
-
-export interface ImagesContext {
-	input: ImagesInputContent[];
-}
-
-export type ImagesStopReason = "stop" | "error" | "aborted";
-
-export interface AssistantImages {
-	api: ImagesApi;
-	provider: ImagesProvider;
-	model: string;
-	output: ImagesOutputContent[];
-	responseId?: string;
-	usage?: Usage;
-	stopReason: ImagesStopReason;
-	errorMessage?: string;
-	timestamp: number; // Unix timestamp in milliseconds
-}
-
 import type { TSchema } from "typebox";
 
 export interface Tool<TParameters extends TSchema = TSchema> {
@@ -389,20 +299,10 @@ export interface OpenAICompletionsCompat {
 	requiresThinkingAsText?: boolean;
 	/** Whether all replayed assistant messages must include an empty reasoning_content field when reasoning is enabled. Default: auto-detected from URL. */
 	requiresReasoningContentOnAssistantMessages?: boolean;
-	/** Format for reasoning/thinking parameter. "openai" uses reasoning_effort, "openrouter" uses reasoning: { effort }, "deepseek" uses thinking: { type } plus reasoning_effort when supported, "together" uses reasoning: { enabled } plus reasoning_effort when supported, "zai" uses top-level enable_thinking: boolean, "qwen" uses top-level enable_thinking: boolean, "qwen-chat-template" uses chat_template_kwargs.enable_thinking, and "string-thinking" uses top-level thinking: string. Default: "openai". */
-	thinkingFormat?:
-		| "openai"
-		| "openrouter"
-		| "deepseek"
-		| "together"
-		| "zai"
-		| "qwen"
-		| "qwen-chat-template"
-		| "string-thinking";
+	/** Format for reasoning/thinking parameter. "openai" uses reasoning_effort, "deepseek" uses thinking: { type } plus reasoning_effort when supported, "together" uses reasoning: { enabled } plus reasoning_effort when supported, "zai" uses top-level enable_thinking: boolean, "qwen" uses top-level enable_thinking: boolean, "qwen-chat-template" uses chat_template_kwargs.enable_thinking, and "string-thinking" uses top-level thinking: string. Default: "openai". */
+	thinkingFormat?: "openai" | "deepseek" | "together" | "zai" | "qwen" | "qwen-chat-template" | "string-thinking";
 	/** OpenRouter-specific routing preferences. Only used when baseUrl points to OpenRouter. */
-	openRouterRouting?: OpenRouterRouting;
 	/** Vercel AI Gateway routing preferences. Only used when baseUrl points to Vercel AI Gateway. */
-	vercelGatewayRouting?: VercelGatewayRouting;
 	/** Whether z.ai supports top-level `tool_stream: true` for streaming tool call deltas. Default: false. */
 	zaiToolStream?: boolean;
 	/** Whether the provider supports the `strict` field in tool definitions. Default: true. */
@@ -470,94 +370,6 @@ export interface AnthropicMessagesCompat {
 	/** Whether to replay empty thinking signatures as `signature: ""` instead of converting thinking to text. Default: false. */
 	allowEmptySignature?: boolean;
 }
-
-/**
- * OpenRouter provider routing preferences.
- * Controls which upstream providers OpenRouter routes requests to.
- * Sent as the `provider` field in the OpenRouter API request body.
- * @see https://openrouter.ai/docs/guides/routing/provider-selection
- */
-export interface OpenRouterRouting {
-	/** Whether to allow backup providers to serve requests. Default: true. */
-	allow_fallbacks?: boolean;
-	/** Whether to filter providers to only those that support all parameters in the request. Default: false. */
-	require_parameters?: boolean;
-	/** Data collection setting. "allow" (default): allow providers that may store/train on data. "deny": only use providers that don't collect user data. */
-	data_collection?: "deny" | "allow";
-	/** Whether to restrict routing to only ZDR (Zero Data Retention) endpoints. */
-	zdr?: boolean;
-	/** Whether to restrict routing to only models that allow text distillation. */
-	enforce_distillable_text?: boolean;
-	/** An ordered list of provider names/slugs to try in sequence, falling back to the next if unavailable. */
-	order?: string[];
-	/** List of provider names/slugs to exclusively allow for this request. */
-	only?: string[];
-	/** List of provider names/slugs to skip for this request. */
-	ignore?: string[];
-	/** A list of quantization levels to filter providers by (e.g., ["fp16", "bf16", "fp8", "fp6", "int8", "int4", "fp4", "fp32"]). */
-	quantizations?: string[];
-	/** Sorting strategy. Can be a string (e.g., "price", "throughput", "latency") or an object with `by` and `partition`. */
-	sort?:
-		| string
-		| {
-				/** The sorting metric: "price", "throughput", "latency". */
-				by?: string;
-				/** Partitioning strategy: "model" (default) or "none". */
-				partition?: string | null;
-		  };
-	/** Maximum price per million tokens (USD). */
-	max_price?: {
-		/** Price per million prompt tokens. */
-		prompt?: number | string;
-		/** Price per million completion tokens. */
-		completion?: number | string;
-		/** Price per image. */
-		image?: number | string;
-		/** Price per audio unit. */
-		audio?: number | string;
-		/** Price per request. */
-		request?: number | string;
-	};
-	/** Preferred minimum throughput (tokens/second). Can be a number (applies to p50) or an object with percentile-specific cutoffs. */
-	preferred_min_throughput?:
-		| number
-		| {
-				/** Minimum tokens/second at the 50th percentile. */
-				p50?: number;
-				/** Minimum tokens/second at the 75th percentile. */
-				p75?: number;
-				/** Minimum tokens/second at the 90th percentile. */
-				p90?: number;
-				/** Minimum tokens/second at the 99th percentile. */
-				p99?: number;
-		  };
-	/** Preferred maximum latency (seconds). Can be a number (applies to p50) or an object with percentile-specific cutoffs. */
-	preferred_max_latency?:
-		| number
-		| {
-				/** Maximum latency in seconds at the 50th percentile. */
-				p50?: number;
-				/** Maximum latency in seconds at the 75th percentile. */
-				p75?: number;
-				/** Maximum latency in seconds at the 90th percentile. */
-				p90?: number;
-				/** Maximum latency in seconds at the 99th percentile. */
-				p99?: number;
-		  };
-}
-
-/**
- * Vercel AI Gateway routing preferences.
- * Controls which upstream providers the gateway routes requests to.
- * @see https://vercel.com/docs/ai-gateway/models-and-providers/provider-options
- */
-export interface VercelGatewayRouting {
-	/** List of provider slugs to exclusively use for this request (e.g., ["bedrock", "anthropic"]). */
-	only?: string[];
-	/** List of provider slugs to try in order (e.g., ["anthropic", "openai"]). */
-	order?: string[];
-}
-
 // Model interface for the unified model system
 export interface Model<TApi extends Api> {
 	id: string;
@@ -589,11 +401,4 @@ export interface Model<TApi extends Api> {
 			: TApi extends "anthropic-messages"
 				? AnthropicMessagesCompat
 				: never;
-}
-
-export interface ImagesModel<TApi extends ImagesApi>
-	extends Omit<Model<Api>, "api" | "provider" | "reasoning" | "contextWindow" | "maxTokens" | "compat"> {
-	api: TApi;
-	provider: ImagesProvider;
-	output: ("text" | "image")[];
 }

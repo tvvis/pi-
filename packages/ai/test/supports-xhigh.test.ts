@@ -38,12 +38,6 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).toEqual(["medium", "high", "xhigh"]);
 	});
 
-	it("includes only medium/high/xhigh for OpenRouter GPT-5.5 Pro", () => {
-		const model = getModel("openrouter", "openai/gpt-5.5-pro");
-		expect(model).toBeDefined();
-		expect(getSupportedThinkingLevels(model!)).toEqual(["medium", "high", "xhigh"]);
-	});
-
 	it("includes only high/xhigh plus off for DeepSeek V4 Flash on the DeepSeek provider", () => {
 		const model = getModel("deepseek", "deepseek-v4-flash");
 		expect(model).toBeDefined();
@@ -66,17 +60,5 @@ describe("getSupportedThinkingLevels", () => {
 		const model = getModel("opencode", "grok-build-0.1");
 		expect(model).toBeDefined();
 		expect(getSupportedThinkingLevels(model!)).toEqual(["high"]);
-	});
-
-	it("includes only high/xhigh plus off for DeepSeek V4 Flash on OpenRouter", () => {
-		const model = getModel("openrouter", "deepseek/deepseek-v4-flash");
-		expect(model).toBeDefined();
-		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "high", "xhigh"]);
-	});
-
-	it("includes xhigh for OpenRouter Opus 4.6 (openai-completions API)", () => {
-		const model = getModel("openrouter", "anthropic/claude-opus-4.6");
-		expect(model).toBeDefined();
-		expect(getSupportedThinkingLevels(model!)).toContain("xhigh");
 	});
 });

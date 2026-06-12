@@ -817,28 +817,6 @@ describe("openai-completions tool_choice", () => {
 		expect(writeCall).not.toHaveProperty("partialArgs");
 	});
 
-	it("uses system messages for OpenRouter reasoning model instructions", async () => {
-		const model = getModel("openrouter", "deepseek/deepseek-v4-pro")!;
-		let payload: unknown;
-
-		await streamSimple(
-			model,
-			{
-				systemPrompt: "Follow instructions.",
-				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-			},
-			{
-				apiKey: "test",
-				onPayload: (params: unknown) => {
-					payload = params;
-				},
-			},
-		).result();
-
-		const params = payload as { messages?: Array<{ role?: string }> };
-		expect(params.messages?.[0]?.role).toBe("system");
-	});
-
 	it("keeps developer messages for OpenAI reasoning model instructions", async () => {
 		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-5.5")!;
 		const model = { ...baseModel, api: "openai-completions" } as const;
@@ -1027,8 +1005,6 @@ describe("openai-completions tool_choice", () => {
 				requiresThinkingAsText: false,
 				requiresReasoningContentOnAssistantMessages: false,
 				thinkingFormat: "openai",
-				openRouterRouting: {},
-				vercelGatewayRouting: {},
 				zaiToolStream: false,
 				supportsStrictMode: true,
 				sendSessionAffinityHeaders: false,
@@ -1227,37 +1203,5 @@ describe("openai-completions tool_choice", () => {
 		expect(response.usage.cacheRead).toBe(50);
 		expect(response.usage.cacheWrite).toBe(30);
 		expect(response.usage.totalTokens).toBe(105);
-	});
-
-	it("uses OpenRouter reasoning object instead of reasoning_effort", async () => {
-		const model = getModel("openrouter", "deepseek/deepseek-r1")!;
-		let payload: unknown;
-
-		await streamSimple(
-			model,
-			{
-				messages: [
-					{
-						role: "user",
-						content: "Hi",
-						timestamp: Date.now(),
-					},
-				],
-			},
-			{
-				apiKey: "test",
-				reasoning: "high",
-				onPayload: (params: unknown) => {
-					payload = params;
-				},
-			},
-		).result();
-
-		const params = (payload ?? mockState.lastParams) as {
-			reasoning?: { effort?: string };
-			reasoning_effort?: string;
-		};
-		expect(params.reasoning).toEqual({ effort: "high" });
-		expect(params.reasoning_effort).toBeUndefined();
 	});
 });

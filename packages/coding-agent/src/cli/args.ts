@@ -230,7 +230,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
 
 ${chalk.bold("Options:")}
-  --provider <name>              Provider name (default: google)
+  --provider <name>              Provider name
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
@@ -335,7 +335,6 @@ ${chalk.bold("Environment Variables:")}
   AZURE_OPENAI_API_VERSION         - Azure OpenAI API version (default: v1)
   AZURE_OPENAI_DEPLOYMENT_NAME_MAP - Azure OpenAI model=deployment map (comma-separated)
   DEEPSEEK_API_KEY                 - DeepSeek API key
-  GEMINI_API_KEY                   - Google Gemini API key
   GROQ_API_KEY                     - Groq API key
   CEREBRAS_API_KEY                 - Cerebras API key
   XAI_API_KEY                      - xAI Grok API key
@@ -344,7 +343,6 @@ ${chalk.bold("Environment Variables:")}
   OPENROUTER_API_KEY               - OpenRouter API key
   AI_GATEWAY_API_KEY               - Vercel AI Gateway API key
   ZAI_API_KEY                      - ZAI API key
-  MISTRAL_API_KEY                  - Mistral API key
   MINIMAX_API_KEY                  - MiniMax API key
   MOONSHOT_API_KEY                 - Moonshot AI API key
   OPENCODE_API_KEY                 - OpenCode Zen/OpenCode Go API key
@@ -356,11 +354,6 @@ ${chalk.bold("Environment Variables:")}
   XIAOMI_TOKEN_PLAN_CN_API_KEY     - Xiaomi MiMo Token Plan API key (China region)
   XIAOMI_TOKEN_PLAN_AMS_API_KEY    - Xiaomi MiMo Token Plan API key (Amsterdam region)
   XIAOMI_TOKEN_PLAN_SGP_API_KEY    - Xiaomi MiMo Token Plan API key (Singapore region)
-  AWS_PROFILE                      - AWS profile for Amazon Bedrock
-  AWS_ACCESS_KEY_ID                - AWS access key for Amazon Bedrock
-  AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock
-  AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
-  AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
   ${ENV_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
   ${ENV_SESSION_DIR.padEnd(32)} - Session storage directory (overridden by --session-dir)
   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)

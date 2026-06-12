@@ -12,22 +12,16 @@ import type { ModelRegistry } from "./model-registry.ts";
 
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<KnownProvider, string> = {
-	"amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
 	anthropic: "claude-opus-4-8",
 	openai: "gpt-5.4",
 	"azure-openai-responses": "gpt-5.4",
 	"openai-codex": "gpt-5.5",
 	deepseek: "deepseek-v4-pro",
-	google: "gemini-3.1-pro-preview",
-	"google-vertex": "gemini-3.1-pro-preview",
 	"github-copilot": "gpt-5.4",
-	openrouter: "moonshotai/kimi-k2.6",
-	"vercel-ai-gateway": "zai/glm-5.1",
 	xai: "grok-4.20-0309-reasoning",
 	groq: "openai/gpt-oss-120b",
 	cerebras: "zai-glm-4.7",
 	zai: "glm-5.1",
-	mistral: "devstral-medium-latest",
 	minimax: "MiniMax-M3",
 	"minimax-cn": "MiniMax-M3",
 	moonshotai: "kimi-k2.6",

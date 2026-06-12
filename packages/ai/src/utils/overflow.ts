@@ -24,7 +24,6 @@ import type { AssistantMessage } from "../types.ts";
  * - MiniMax: "invalid params, context window exceeds limit"
  * - Kimi For Coding: "Your request exceeded model token limit: X (requested: Y)"
  * - Cerebras: "400/413 status code (no body)"
- * - Mistral: "Prompt contains X tokens ... too large for model with Y maximum context length"
  * - z.ai: Does NOT error, accepts overflow silently - handled via usage.input > contextWindow
  * - Xiaomi MiMo: Truncates input to fill contextWindow exactly, then returns finish_reason "length"
  *   with output=0 (no room left to generate). Detected via stopReason "length" + zero output +
@@ -34,7 +33,6 @@ import type { AssistantMessage } from "../types.ts";
 const OVERFLOW_PATTERNS = [
 	/prompt is too long/i, // Anthropic token overflow
 	/request_too_large/i, // Anthropic request byte-size overflow (HTTP 413)
-	/input is too long for requested model/i, // Amazon Bedrock
 	/exceeds the context window/i, // OpenAI (Completions & Responses API)
 	/exceeds (?:the )?(?:model'?s )?maximum context length of [\d,]+ tokens?/i, // OpenAI-compatible proxies (LiteLLM)
 	/input token count.*exceeds the maximum/i, // Google (Gemini)
@@ -62,12 +60,8 @@ const OVERFLOW_PATTERNS = [
  * Error messages matching any of these are excluded from overflow detection
  * even if they also match an OVERFLOW_PATTERN.
  *
- * Example: Bedrock formats throttling errors as "ThrottlingException: Too many tokens,
- * please wait before trying again." which would match the /too many tokens/i overflow
- * pattern without this exclusion.
  */
 const NON_OVERFLOW_PATTERNS = [
-	/^(Throttling error|Service unavailable):/i, // AWS Bedrock non-overflow errors (human-readable prefixes from formatBedrockError)
 	/rate limit/i, // Generic rate limiting
 	/too many requests/i, // Generic HTTP 429 style
 ];
@@ -90,7 +84,6 @@ const NON_OVERFLOW_PATTERNS = [
  * - xAI (Grok): "maximum prompt length is X but request contains Y"
  * - Groq: "reduce the length of the messages"
  * - Cerebras: 400/413 status code (no body)
- * - Mistral: "Prompt contains X tokens ... too large for model with Y maximum context length"
  * - OpenRouter (most backends): "maximum context length is X tokens"
  * - OpenRouter/Poolside: "Input length X exceeds the maximum allowed input length of Y tokens."
  * - Together AI: "The input (X tokens) is longer than the model's context length (Y tokens)."

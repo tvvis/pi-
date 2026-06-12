@@ -250,7 +250,7 @@ describe("Agent", () => {
 		expect(agent.state.systemPrompt).toBe("Custom prompt");
 
 		// Test setModel
-		const newModel = getModel("google", "gemini-2.5-flash");
+		const newModel = getModel("anthropic", "claude-sonnet-4-20250514");
 		agent.state.model = newModel;
 		expect(agent.state.model).toBe(newModel);
 

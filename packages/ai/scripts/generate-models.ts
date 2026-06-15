@@ -1363,6 +1363,35 @@ async function generateModels() {
 		},
 	];
 	allModels.push(...deepseekV4Models);
+	// Ark (Volcano Engine Ark / ark.cn) is OpenAI-compatible. models.dev has no
+	// entry, so we hardcode the catalog here. Adjust when models.dev adds Ark.
+	const arkCompat: OpenAICompletionsCompat = {
+		supportsStore: false,
+		supportsDeveloperRole: false,
+		supportsReasoningEffort: false,
+		maxTokensField: "max_tokens",
+		supportsStrictMode: false,
+	};
+	const arkModels: Model<"openai-completions">[] = [
+		{
+			id: "glm-5.1",
+			name: "glm-5.1",
+			api: "openai-completions",
+			baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
+			provider: "ark",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			compat: arkCompat,
+			contextWindow: 200000,
+			maxTokens: 131072,
+		},
+	];
+	for (const model of arkModels) {
+		if (!allModels.some(m => m.provider === "ark" && m.id === model.id)) {
+			allModels.push(model);
+		}
+	}
 
 	for (const candidate of allModels) {
 		if (candidate.api === "openai-completions" && candidate.id.includes("deepseek-v4")) {

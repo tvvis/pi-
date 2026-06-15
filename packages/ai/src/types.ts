@@ -34,6 +34,7 @@ export type KnownProvider =
 	| "opencode-go"
 	| "kimi-coding"
 	| "cloudflare-workers-ai"
+	| "ark"
 	| "cloudflare-ai-gateway"
 	| "xiaomi"
 	| "xiaomi-token-plan-cn"

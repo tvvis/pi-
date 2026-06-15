@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added Ark provider to `/login`, model scoping, and CLI env-var docs (`ARK_API_KEY`).
 - Added `ctrl+q` as a default binding for `app.exit` (exit when editor is empty), alongside `ctrl+d`.
 - Added `ctx.mode` to extension contexts so extensions can distinguish TUI, RPC, JSON, and print mode.
 - Added `hideStartupExtras` setting to hide the model scope line, keybinding hints, and onboarding tips at startup while still showing the version line.

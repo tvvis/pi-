@@ -21,6 +21,17 @@ export interface AppKeybindings {
 	"app.model.select": true;
 	"app.tools.expand": true;
 	"app.thinking.toggle": true;
+	"app.sidebar.toggle": true;
+	"app.plan.toggle": true;
+	"app.recentFile.open.1": true;
+	"app.recentFile.open.2": true;
+	"app.recentFile.open.3": true;
+	"app.recentFile.open.4": true;
+	"app.recentFile.open.5": true;
+	"app.recentFile.open.6": true;
+	"app.recentFile.open.7": true;
+	"app.recentFile.open.8": true;
+	"app.recentFile.open.9": true;
 	"app.session.toggleNamedFilter": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
@@ -87,12 +98,23 @@ export const KEYBINDINGS = {
 		defaultKeys: "ctrl+t",
 		description: "Toggle thinking blocks",
 	},
+	"app.sidebar.toggle": { defaultKeys: "ctrl+b", description: "Toggle sidebar" },
+	"app.plan.toggle": { defaultKeys: "alt+o", description: "Toggle plan mode" },
+	"app.recentFile.open.1": { defaultKeys: "alt+1", description: "Open 1st recent file in editor" },
+	"app.recentFile.open.2": { defaultKeys: "alt+2", description: "Open 2nd recent file in editor" },
+	"app.recentFile.open.3": { defaultKeys: "alt+3", description: "Open 3rd recent file in editor" },
+	"app.recentFile.open.4": { defaultKeys: "alt+4", description: "Open 4th recent file in editor" },
+	"app.recentFile.open.5": { defaultKeys: "alt+5", description: "Open 5th recent file in editor" },
+	"app.recentFile.open.6": { defaultKeys: "alt+6", description: "Open 6th recent file in editor" },
+	"app.recentFile.open.7": { defaultKeys: "alt+7", description: "Open 7th recent file in editor" },
+	"app.recentFile.open.8": { defaultKeys: "alt+8", description: "Open 8th recent file in editor" },
+	"app.recentFile.open.9": { defaultKeys: "alt+9", description: "Open 9th recent file in editor" },
 	"app.session.toggleNamedFilter": {
 		defaultKeys: "ctrl+n",
 		description: "Toggle named session filter",
 	},
 	"app.editor.external": {
-		defaultKeys: "ctrl+g",
+		defaultKeys: [],
 		description: "Open external editor",
 	},
 	"app.message.followUp": {

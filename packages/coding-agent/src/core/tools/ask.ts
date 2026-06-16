@@ -10,11 +10,30 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 const askSchema = Type.Object({
 	question: Type.String({ description: "The question to present to the user" }),
 	options: Type.Array(Type.String(), {
-		description: "List of options for the user to choose from (2-5 items recommended)",
+		description:
+			"Flat array of literal strings, one per option (2-5 items). Each item is the text shown to the user.",
 	}),
 });
 
 export type AskToolInput = Static<typeof askSchema>;
+
+function prepareAskArguments(input: unknown): AskToolInput {
+	if (!input || typeof input !== "object") return input as AskToolInput;
+	const args = input as Record<string, unknown>;
+	if (Array.isArray(args.options)) {
+		args.options = args.options.map((opt) => {
+			if (typeof opt === "string") return opt;
+			if (opt && typeof opt === "object") {
+				const o = opt as Record<string, unknown>;
+				for (const key of ["text", "label", "value", "option"]) {
+					if (typeof o[key] === "string") return o[key];
+				}
+			}
+			return opt;
+		});
+	}
+	return args as AskToolInput;
+}
 
 const MAX_QUESTION_RENDER_WIDTH = 60;
 
@@ -54,8 +73,10 @@ export function createAskToolDefinition(): ToolDefinition<typeof askSchema, unde
 			"The user can also type a custom answer; the ask tool always shows a text input alongside the options",
 			"Do not use ask for simple yes/no questions - just ask in your response and let the user reply",
 			"Only use ask when you are at a decision point and cannot proceed without user input",
+			'Call options as a flat array of strings: {"options": ["yes", "no"]}',
 		],
 		parameters: askSchema,
+		prepareArguments: prepareAskArguments,
 		executionMode: "sequential",
 		async execute(_toolCallId, { question, options }, signal, _onUpdate, ctx) {
 			if (options.length === 0) {

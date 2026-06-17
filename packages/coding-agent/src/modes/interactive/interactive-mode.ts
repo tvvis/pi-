@@ -675,6 +675,7 @@ export class InteractiveMode {
 
 		this.setupKeyHandlers();
 		this.setupEditorSubmitHandler();
+		this.setupMouseWheelHandler();
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
@@ -2482,6 +2483,19 @@ export class InteractiveMode {
 		} catch {
 			// Silently ignore clipboard errors (may not have permission, etc.)
 		}
+	}
+
+	private setupMouseWheelHandler(): void {
+		// Map a wheel event to a viewport scroll. The terminal delivers
+		// mouse coordinates as 1-based (x, y). Every wheel event scrolls
+		// the main chat viewport; there is no editor dead zone.
+		this.ui.onMouseWheel = (event) => {
+			if (event.direction === "up") {
+				this.ui.scrollUp(3);
+			} else {
+				this.ui.scrollDown(3);
+			}
+		};
 	}
 
 	private setupEditorSubmitHandler(): void {

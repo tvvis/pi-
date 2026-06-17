@@ -13,17 +13,17 @@ afterEach(() => {
 });
 
 describe("Ark models", () => {
-	it("registers the hardcoded GLM-5.1 model via OpenAI-compatible Chat Completions API", () => {
-		const model = getModel("ark", "GLM-5.1");
+	it("registers the hardcoded glm-5.1 model via OpenAI-compatible Chat Completions API", () => {
+		const model = getModel("ark", "glm-5.1");
 
 		expect(model).toBeDefined();
 		expect(model.api).toBe("openai-completions");
 		expect(model.provider).toBe("ark");
-		expect(model.baseUrl).toBe("https://ark.cn-beijing.volces.com/api/v3");
+		expect(model.baseUrl).toBe("https://ark.cn-beijing.volces.com/api/coding/v3");
 		expect(model.reasoning).toBe(true);
 		expect(model.input).toEqual(["text"]);
-		expect(model.contextWindow).toBe(128000);
-		expect(model.maxTokens).toBe(8192);
+		expect(model.contextWindow).toBe(200000);
+		expect(model.maxTokens).toBe(131072);
 		expect(model.cost).toEqual({
 			input: 0,
 			output: 0,

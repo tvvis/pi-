@@ -10,19 +10,24 @@ export class CustomEditor extends Editor {
 
 	/**
 	 * App actions that must not fire while the editor handles input and the input
-	 * has text.
+	 * has non-whitespace text.
 	 *
 	 * `app.viewport.scrollTop` / `app.viewport.scrollBottom` default to `home` / `end`,
 	 * but those keys are also bound to `tui.editor.cursorLineStart` /
 	 * `tui.editor.cursorLineEnd` so the user can position the cursor inside the
-	 * input box. When the input has text, skip the viewport actions so Home / End
-	 * move the cursor; when the input is empty there is no cursor to position, so
-	 * let the actions scroll the chat as before.
+	 * input box. When the input has real text, skip the viewport actions so Home /
+	 * End move the cursor; when the input is empty (or only whitespace) there is
+	 * no real cursor position to move to, so let the actions scroll the chat.
 	 */
 	private static readonly ACTIONS_SUPPRESSED_IN_NONEMPTY_EDITOR = new Set<AppKeybinding>([
 		"app.viewport.scrollTop",
 		"app.viewport.scrollBottom",
 	]);
+
+	/** True when the input has at least one non-whitespace character. */
+	private hasNonWhitespaceText(): boolean {
+		return /\S/.test(this.getText());
+	}
 
 	// Special handlers that can be dynamically replaced
 	public onEscape?: () => void;
@@ -85,7 +90,7 @@ export class CustomEditor extends Editor {
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
 			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
-				if (CustomEditor.ACTIONS_SUPPRESSED_IN_NONEMPTY_EDITOR.has(action) && this.getText().length > 0) {
+				if (CustomEditor.ACTIONS_SUPPRESSED_IN_NONEMPTY_EDITOR.has(action) && this.hasNonWhitespaceText()) {
 					continue;
 				}
 				handler();

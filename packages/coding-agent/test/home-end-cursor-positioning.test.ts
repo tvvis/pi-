@@ -191,4 +191,46 @@ describe("CustomEditor home/end in input box", () => {
 		editor.handleInput("\x1b[H"); // Home -> scroll
 		expect(scrollTopCalls).toBe(1);
 	});
+
+	it("treats whitespace-only input as empty and still scrolls on Home/End", () => {
+		const keybindings = new KeybindingsManager();
+		setKeybindings(keybindings);
+		const editor = new CustomEditor(createFakeTui(), getEditorTheme(), keybindings);
+		editor.focused = true;
+
+		let scrollTopCalls = 0;
+		let scrollBottomCalls = 0;
+		editor.onAction("app.viewport.scrollTop", () => scrollTopCalls++);
+		editor.onAction("app.viewport.scrollBottom", () => scrollBottomCalls++);
+
+		// Only spaces, no real content.
+		editor.handleInput("   ");
+		expect(editor.getText()).toBe("   ");
+
+		editor.handleInput("\x1b[H"); // Home -> scroll
+		expect(scrollTopCalls).toBe(1);
+
+		editor.handleInput("\x1b[F"); // End -> scroll
+		expect(scrollBottomCalls).toBe(1);
+	});
+
+	it("switches to cursor positioning the moment a real character is typed among spaces", () => {
+		const keybindings = new KeybindingsManager();
+		setKeybindings(keybindings);
+		const editor = new CustomEditor(createFakeTui(), getEditorTheme(), keybindings);
+		editor.focused = true;
+
+		let scrollTopCalls = 0;
+		editor.onAction("app.viewport.scrollTop", () => scrollTopCalls++);
+
+		editor.handleInput("  ");
+		editor.handleInput("\x1b[H");
+		expect(scrollTopCalls).toBe(1);
+
+		// Now type a real character -> Home positions the cursor instead of scrolling.
+		editor.handleInput("x");
+		editor.handleInput("\x1b[H");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
+		expect(scrollTopCalls).toBe(1);
+	});
 });

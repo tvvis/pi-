@@ -8,6 +8,19 @@ export class CustomEditor extends Editor {
 	private keybindings: KeybindingsManager;
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
+	/**
+	 * App actions that must never fire while the editor handles input.
+	 *
+	 * `app.viewport.scrollTop` / `app.viewport.scrollBottom` default to `home` / `end`,
+	 * but those keys are also bound to `tui.editor.cursorLineStart` /
+	 * `tui.editor.cursorLineEnd` so the user can position the cursor inside the
+	 * input box. Skip them here so the keys fall through to the editor.
+	 */
+	private static readonly ACTIONS_SUPPRESSED_IN_EDITOR = new Set<AppKeybinding>([
+		"app.viewport.scrollTop",
+		"app.viewport.scrollBottom",
+	]);
+
 	// Special handlers that can be dynamically replaced
 	public onEscape?: () => void;
 	public onCtrlD?: () => void;
@@ -68,7 +81,12 @@ export class CustomEditor extends Editor {
 
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
-			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
+			if (
+				action !== "app.interrupt" &&
+				action !== "app.exit" &&
+				!CustomEditor.ACTIONS_SUPPRESSED_IN_EDITOR.has(action) &&
+				this.keybindings.matches(data, action)
+			) {
 				handler();
 				return;
 			}

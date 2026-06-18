@@ -122,4 +122,73 @@ describe("CustomEditor home/end in input box", () => {
 		expect(editor.getCursor()).toEqual({ line: 0, col: 11 });
 		expect(scrollBottomCalls).toBe(0);
 	});
+
+	it("still scrolls the chat on Home/End when the input box is empty", () => {
+		const keybindings = new KeybindingsManager();
+		setKeybindings(keybindings);
+		const editor = new CustomEditor(createFakeTui(), getEditorTheme(), keybindings);
+		editor.focused = true;
+		// empty input: nothing to position the cursor in
+		expect(editor.getText()).toBe("");
+
+		let scrollTopCalls = 0;
+		let scrollBottomCalls = 0;
+		editor.onAction("app.viewport.scrollTop", () => scrollTopCalls++);
+		editor.onAction("app.viewport.scrollBottom", () => scrollBottomCalls++);
+
+		editor.handleInput("\x1b[H"); // Home
+		expect(scrollTopCalls).toBe(1);
+		expect(scrollBottomCalls).toBe(0);
+
+		editor.handleInput("\x1b[F"); // End
+		expect(scrollTopCalls).toBe(1);
+		expect(scrollBottomCalls).toBe(1);
+	});
+
+	it("switches back to cursor positioning as soon as the input has text", () => {
+		const keybindings = new KeybindingsManager();
+		setKeybindings(keybindings);
+		const editor = new CustomEditor(createFakeTui(), getEditorTheme(), keybindings);
+		editor.focused = true;
+
+		let scrollTopCalls = 0;
+		let scrollBottomCalls = 0;
+		editor.onAction("app.viewport.scrollTop", () => scrollTopCalls++);
+		editor.onAction("app.viewport.scrollBottom", () => scrollBottomCalls++);
+
+		// Empty input: Home scrolls.
+		editor.handleInput("\x1b[H");
+		expect(scrollTopCalls).toBe(1);
+
+		// Type a character -> input is now non-empty.
+		editor.handleInput("x");
+		expect(editor.getText()).toBe("x");
+
+		// Home now positions the cursor instead of scrolling.
+		editor.handleInput("\x1b[H");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
+		expect(scrollTopCalls).toBe(1);
+
+		editor.handleInput("\x1b[F");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 1 });
+		expect(scrollBottomCalls).toBe(0);
+	});
+
+	it("treats only-typed-text as non-empty (typing-then-backspace falls back to scroll)", () => {
+		const keybindings = new KeybindingsManager();
+		setKeybindings(keybindings);
+		const editor = new CustomEditor(createFakeTui(), getEditorTheme(), keybindings);
+		editor.focused = true;
+
+		let scrollTopCalls = 0;
+		editor.onAction("app.viewport.scrollTop", () => scrollTopCalls++);
+
+		// Type and then delete the character: input goes back to empty.
+		editor.handleInput("x");
+		editor.handleInput("\x7f"); // backspace
+		expect(editor.getText()).toBe("");
+
+		editor.handleInput("\x1b[H"); // Home -> scroll
+		expect(scrollTopCalls).toBe(1);
+	});
 });

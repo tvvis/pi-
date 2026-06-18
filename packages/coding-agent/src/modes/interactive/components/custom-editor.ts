@@ -9,14 +9,17 @@ export class CustomEditor extends Editor {
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
 	/**
-	 * App actions that must never fire while the editor handles input.
+	 * App actions that must not fire while the editor handles input and the input
+	 * has text.
 	 *
 	 * `app.viewport.scrollTop` / `app.viewport.scrollBottom` default to `home` / `end`,
 	 * but those keys are also bound to `tui.editor.cursorLineStart` /
 	 * `tui.editor.cursorLineEnd` so the user can position the cursor inside the
-	 * input box. Skip them here so the keys fall through to the editor.
+	 * input box. When the input has text, skip the viewport actions so Home / End
+	 * move the cursor; when the input is empty there is no cursor to position, so
+	 * let the actions scroll the chat as before.
 	 */
-	private static readonly ACTIONS_SUPPRESSED_IN_EDITOR = new Set<AppKeybinding>([
+	private static readonly ACTIONS_SUPPRESSED_IN_NONEMPTY_EDITOR = new Set<AppKeybinding>([
 		"app.viewport.scrollTop",
 		"app.viewport.scrollBottom",
 	]);
@@ -81,12 +84,10 @@ export class CustomEditor extends Editor {
 
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
-			if (
-				action !== "app.interrupt" &&
-				action !== "app.exit" &&
-				!CustomEditor.ACTIONS_SUPPRESSED_IN_EDITOR.has(action) &&
-				this.keybindings.matches(data, action)
-			) {
+			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
+				if (CustomEditor.ACTIONS_SUPPRESSED_IN_NONEMPTY_EDITOR.has(action) && this.getText().length > 0) {
+					continue;
+				}
 				handler();
 				return;
 			}

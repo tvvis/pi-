@@ -13,6 +13,10 @@ type SubmitContext = {
 		isBashRunning: boolean;
 		prompt: (text: string, options?: unknown) => Promise<void>;
 	};
+	ui: {
+		scrollToBottom: () => void;
+		requestRender: () => void;
+	};
 	flushPendingBashComponents: () => void;
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
@@ -43,6 +47,10 @@ function createSubmitContext(): SubmitContext {
 			isBashRunning: false,
 			prompt: vi.fn(async () => {}),
 		},
+		ui: {
+			scrollToBottom: vi.fn(),
+			requestRender: vi.fn(),
+		},
 		flushPendingBashComponents: vi.fn(),
 		pendingUserInputs: [],
 	};
@@ -68,5 +76,34 @@ describe("InteractiveMode startup input", () => {
 		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("queued prompt");
 		expect(context.onInputCallback).toBeUndefined();
 		expect(context.pendingUserInputs).toEqual([]);
+	});
+});
+
+describe("InteractiveMode submit scroll", () => {
+	it("scrolls the chat to the bottom when a normal prompt is submitted", async () => {
+		const context = createSubmitContext();
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("hello world");
+
+		expect(context.ui.scrollToBottom).toHaveBeenCalledTimes(1);
+	});
+
+	it("scrolls the chat to the bottom even when the input is just whitespace plus content", async () => {
+		const context = createSubmitContext();
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("   hi   ");
+
+		expect(context.ui.scrollToBottom).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not scroll when the submit is empty (after trim)", async () => {
+		const context = createSubmitContext();
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("   ");
+
+		expect(context.ui.scrollToBottom).not.toHaveBeenCalled();
 	});
 });

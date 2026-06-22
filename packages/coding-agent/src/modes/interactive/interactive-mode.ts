@@ -5,6 +5,7 @@
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -75,7 +76,7 @@ import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
-import { getCwdRelativePath } from "../../utils/paths.ts";
+import { getCwdRelativePath, isWslEnvironment, toWindowsPath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
@@ -98,11 +99,25 @@ import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./c
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
+import { SidebarRecentFiles } from "./components/sidebar-recent-files.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+import {
+	derivePlanSlug,
+	enterPlanMode,
+	exitPlanMode,
+	getDraftRoot,
+	setPlanModeChoiceHandler,
+} from "./plan-mode-state.ts";
+import {
+	loadRecentFiles,
+	MAX_RECENT_FILES,
+	persistRecentFiles,
+	type RecentFile,
+} from "./sidebar-recent-files-store.ts";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -165,6 +180,21 @@ function isDeadTerminalError(error: unknown): boolean {
 	return code !== undefined && DEAD_TERMINAL_ERROR_CODES.has(code);
 }
 
+function ordinalSuffix(n: number): string {
+	const mod100 = n % 100;
+	if (mod100 >= 11 && mod100 <= 13) return "th";
+	switch (n % 10) {
+		case 1:
+			return "st";
+		case 2:
+			return "nd";
+		case 3:
+			return "rd";
+		default:
+			return "th";
+	}
+}
+
 function _isUnknownModel(model: Model<any> | undefined): boolean {
 	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
 }
@@ -183,7 +213,7 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 	const sessionFile = sessionManager.getSessionFile();
 	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
 
-	const args = [APP_NAME];
+	const args = ["pi"];
 	if (!sessionManager.usesDefaultSessionDir()) {
 		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
 	}
@@ -299,6 +329,21 @@ export class InteractiveMode {
 	// Track pending bash components (shown in pending area, moved to chat on submit)
 	private pendingBashComponents: BashExecutionComponent[] = [];
 
+	// Args of pending tool executions, keyed by toolCallId. Captured at
+	// tool_execution_start (since the end event does not carry args) and
+	// consumed at tool_execution_end to track recent files.
+	private pendingToolArgs = new Map<string, unknown>();
+
+	// Files touched by the edit/write tools in this session, MRU first.
+	// Session-scoped only; not persisted to settings.
+	private recentFiles: RecentFile[] = [];
+
+	// Plan mode: when true, the agent is restricted to read tools + the
+	// plan tool, and write/edit are confined to ~/.pi/draft/<session-id>/.
+	// State is in-memory only and does not survive /resume.
+	private inPlanMode = false;
+	private planModeActiveToolNames: string[] = []; // tool set to restore on exit
+
 	// Auto-compaction state
 	private autoCompactionLoader: Loader | undefined = undefined;
 	private autoCompactionEscapeHandler?: () => void;
@@ -320,6 +365,11 @@ export class InteractiveMode {
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
 
+	// Sidebar visibility. Transient by default (toggled by ctrl+b without
+	// touching settings); /sidebar on|off writes the persistent setting.
+	// Sidebar width comes from settings.sidebarWidth (default 20, range 10-80).
+	private sidebarVisible: boolean = false;
+
 	// Extension widgets (components rendered above/below the editor)
 	private extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
 	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
@@ -337,6 +387,11 @@ export class InteractiveMode {
 
 	// Custom header from extension (undefined = use built-in header)
 	private customHeader: (Component & { dispose?(): void }) | undefined = undefined;
+
+	// Sidebar layout: a single HSplit at the TUI root, splitting the main
+	// column (chat / editor / footer) from the sidebar column.
+	private mainColumn!: Container;
+	private sidebarContent: Component | undefined = undefined;
 
 	private options: InteractiveModeOptions;
 
@@ -372,6 +427,13 @@ export class InteractiveMode {
 		this.statusContainer = new Container();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
+		this.mainColumn = new Container();
+		this.sidebarContent = new SidebarRecentFiles(
+			() => this.recentFiles,
+			this.sessionManager.getCwd(),
+			() => VERSION,
+		);
+		this.sidebarVisible = this.settingsManager.getSidebarVisible();
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
@@ -596,7 +658,7 @@ export class InteractiveMode {
 		}
 
 		// Add header container as first child
-		this.ui.addChild(this.headerContainer);
+		this.mainColumn.addChild(this.headerContainer);
 
 		// Add header with keybindings from config (unless silenced)
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
@@ -617,6 +679,7 @@ export class InteractiveMode {
 				hint("app.model.select", "to select model"),
 				hint("app.tools.expand", "to expand tools"),
 				hint("app.thinking.toggle", "to expand thinking"),
+				hint("app.sidebar.toggle", "to toggle sidebar"),
 				hint("app.editor.external", "for external editor"),
 				rawKeyHint("/", "for commands"),
 				rawKeyHint("!", "to run bash"),
@@ -663,14 +726,21 @@ export class InteractiveMode {
 			this.headerContainer.addChild(this.builtInHeader);
 		}
 
-		this.ui.addChild(this.chatContainer);
-		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.statusContainer);
+		this.mainColumn.addChild(this.chatContainer);
+		this.mainColumn.addChild(this.pendingMessagesContainer);
+		this.mainColumn.addChild(this.statusContainer);
 		this.renderWidgets(); // Initialize with default spacer
-		this.ui.addChild(this.widgetContainerAbove);
-		this.ui.addChild(this.editorContainer);
-		this.ui.addChild(this.widgetContainerBelow);
-		this.ui.addChild(this.footer);
+		this.mainColumn.addChild(this.widgetContainerAbove);
+		this.mainColumn.addChild(this.widgetContainerBelow);
+
+		// Fixed bottom panel: editor + footer never scroll with chat history.
+		const bottomPanel = this.ui.getBottomPanel();
+		bottomPanel.addChild(this.editorContainer);
+		bottomPanel.addChild(this.footer);
+		this.ui.setBottomPanelHeight(5); // Reserve up to 5 rows: editor(1-3) + footer(2-3)
+
+		this.ui.addChild(this.mainColumn);
+		this.setSidebarVisible(this.sidebarVisible);
 		this.ui.setFocus(this.editor);
 
 		this.setupKeyHandlers();
@@ -715,9 +785,9 @@ export class InteractiveMode {
 		const cwdBasename = path.basename(this.sessionManager.getCwd());
 		const sessionName = this.sessionManager.getSessionName();
 		if (sessionName) {
-			this.ui.terminal.setTitle(`${APP_TITLE} - ${sessionName} - ${cwdBasename}`);
+			this.ui.terminal.setTitle(`${APP_TITLE} | ${sessionName} | ${cwdBasename}`);
 		} else {
-			this.ui.terminal.setTitle(`${APP_TITLE} - ${cwdBasename}`);
+			this.ui.terminal.setTitle(`${APP_TITLE} | ${cwdBasename}`);
 		}
 	}
 
@@ -1597,6 +1667,7 @@ export class InteractiveMode {
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+		this.setSidebarVisible(this.settingsManager.getSidebarVisible());
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
 		const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
 		this.defaultEditor.setPaddingX(editorPaddingX);
@@ -1610,6 +1681,11 @@ export class InteractiveMode {
 	private async rebindCurrentSession(): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
+		// Restore the sidebar recent files from the current session before
+		// settings/extensions wire up, so the sidebar reflects persisted
+		// state on its first render.
+		this.recentFiles = loadRecentFiles(this.sessionManager);
+		this.sidebarContent?.invalidate?.();
 		this.applyRuntimeSettings();
 		await this.bindCurrentSessionExtensions();
 		this.subscribeToAgent();
@@ -1900,21 +1976,21 @@ export class InteractiveMode {
 			this.customFooter.dispose();
 		}
 
-		// Remove current footer from UI
+		// Remove current footer from main column
 		if (this.customFooter) {
-			this.ui.removeChild(this.customFooter);
+			this.mainColumn.removeChild(this.customFooter);
 		} else {
-			this.ui.removeChild(this.footer);
+			this.mainColumn.removeChild(this.footer);
 		}
 
 		if (factory) {
 			// Create and add custom footer, passing the data provider
 			this.customFooter = factory(this.ui, theme, this.footerDataProvider);
-			this.ui.addChild(this.customFooter);
+			this.mainColumn.addChild(this.customFooter);
 		} else {
 			// Restore built-in footer
 			this.customFooter = undefined;
-			this.ui.addChild(this.footer);
+			this.mainColumn.addChild(this.footer);
 		}
 
 		this.ui.requestRender();
@@ -2080,6 +2156,7 @@ export class InteractiveMode {
 
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.extensionSelector);
+			this.ui.setBottomPanelHeight(999);
 			this.ui.setFocus(this.extensionSelector);
 			this.ui.requestRender();
 		});
@@ -2094,6 +2171,7 @@ export class InteractiveMode {
 		this.editorContainer.addChild(this.editor);
 		this.extensionSelector = undefined;
 		this.ui.setFocus(this.editor);
+		this.ui.setBottomPanelHeight(this.savedBottomPanelHeight);
 		this.ui.requestRender();
 	}
 
@@ -2116,6 +2194,9 @@ export class InteractiveMode {
 		);
 		return confirmed ? error.issue.fallbackCwd : undefined;
 	}
+
+	/** Saved bottom panel height before an extension overlay was shown. */
+	private savedBottomPanelHeight: number = 5;
 
 	/**
 	 * Show a text input for extensions.
@@ -2155,6 +2236,7 @@ export class InteractiveMode {
 
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.extensionInput);
+			this.ui.setBottomPanelHeight(999);
 			this.ui.setFocus(this.extensionInput);
 			this.ui.requestRender();
 		});
@@ -2194,6 +2276,7 @@ export class InteractiveMode {
 
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.extensionEditor);
+			this.ui.setBottomPanelHeight(999);
 			this.ui.setFocus(this.extensionEditor);
 			this.ui.requestRender();
 		});
@@ -2207,6 +2290,7 @@ export class InteractiveMode {
 		this.editorContainer.addChild(this.editor);
 		this.extensionEditor = undefined;
 		this.ui.setFocus(this.editor);
+		this.ui.setBottomPanelHeight(this.savedBottomPanelHeight);
 		this.ui.requestRender();
 	}
 
@@ -2314,6 +2398,7 @@ export class InteractiveMode {
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.editor);
 			this.editor.setText(savedText);
+			this.ui.setBottomPanelHeight(this.savedBottomPanelHeight);
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
 		};
@@ -2360,6 +2445,7 @@ export class InteractiveMode {
 					} else {
 						this.editorContainer.clear();
 						this.editorContainer.addChild(component);
+						this.ui.setBottomPanelHeight(999);
 						this.ui.setFocus(component);
 						this.ui.requestRender();
 					}
@@ -2441,6 +2527,25 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.model.select", () => this.showModelSelector());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
+		this.defaultEditor.onAction("app.sidebar.toggle", () => this.toggleSidebar());
+		this.defaultEditor.onAction("app.viewport.scrollTop", () => this.ui.scrollToTop());
+		this.defaultEditor.onAction("app.viewport.scrollBottom", () => this.ui.scrollToBottom());
+		this.defaultEditor.onAction("app.viewport.scrollUp", () =>
+			this.ui.scrollUp(Math.max(5, Math.floor(this.ui.terminal.rows * 0.8))),
+		);
+		this.defaultEditor.onAction("app.viewport.scrollDown", () =>
+			this.ui.scrollDown(Math.max(5, Math.floor(this.ui.terminal.rows * 0.8))),
+		);
+		this.defaultEditor.onAction("app.plan.toggle", () => this.togglePlanMode());
+		this.defaultEditor.onAction("app.recentFile.open.1", () => this.openRecentFile(1));
+		this.defaultEditor.onAction("app.recentFile.open.2", () => this.openRecentFile(2));
+		this.defaultEditor.onAction("app.recentFile.open.3", () => this.openRecentFile(3));
+		this.defaultEditor.onAction("app.recentFile.open.4", () => this.openRecentFile(4));
+		this.defaultEditor.onAction("app.recentFile.open.5", () => this.openRecentFile(5));
+		this.defaultEditor.onAction("app.recentFile.open.6", () => this.openRecentFile(6));
+		this.defaultEditor.onAction("app.recentFile.open.7", () => this.openRecentFile(7));
+		this.defaultEditor.onAction("app.recentFile.open.8", () => this.openRecentFile(8));
+		this.defaultEditor.onAction("app.recentFile.open.9", () => this.openRecentFile(9));
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
@@ -2486,10 +2591,15 @@ export class InteractiveMode {
 	}
 
 	private setupMouseWheelHandler(): void {
-		// Map a wheel event to a viewport scroll. The terminal delivers
-		// mouse coordinates as 1-based (x, y). Every wheel event scrolls
-		// the main chat viewport; there is no editor dead zone.
+		// Map a wheel event to a viewport scroll. The terminal delivers mouse
+		// coordinates as 1-based (x, y). The sidebar is the only area we
+		// ignore — it has no overflow and is not part of the scrollable main
+		// content. Wheel events over the editor, footer, selectors, or
+		// overlays all scroll the main chat viewport; the TUI-level mouse
+		// handler already prevents the raw SGR escape from being inserted
+		// as text into the focused component.
 		this.ui.onMouseWheel = (event) => {
+			if (this.sidebarVisible && event.x <= this.settingsManager.getSidebarWidth()) return;
 			if (event.direction === "up") {
 				this.ui.scrollUp(3);
 			} else {
@@ -2502,6 +2612,11 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
 			if (!text) return;
+
+			// Snap the chat to the bottom so the user can see the message they
+			// just sent (and any assistant output that follows), even if they
+			// had scrolled up to read older history before pressing Enter.
+			this.ui.scrollToBottom();
 
 			// Handle commands
 			if (text === "/settings") {
@@ -2564,6 +2679,30 @@ export class InteractiveMode {
 			if (text === "/resume") {
 				this.showSessionSelector();
 				this.editor.setText("");
+				return;
+			}
+			if (text === "/sidebar" || text === "/sidebar on" || text === "/sidebar off") {
+				this.editor.setText("");
+				const explicit = text === "/sidebar on" ? true : text === "/sidebar off" ? false : undefined;
+				if (explicit === undefined) {
+					this.toggleSidebar();
+				} else {
+					this.settingsManager.setSidebarVisible(explicit);
+					this.setSidebarVisible(explicit);
+					this.showStatus(`Sidebar: ${explicit ? "visible" : "hidden"}`);
+				}
+				return;
+			}
+			if (text === "/plan" || text.startsWith("/plan ")) {
+				this.editor.setText("");
+				if (this.inPlanMode) {
+					// Already in plan mode: /plan is a no-op here. Confirmation
+					// is the popup (Phase 3) and toggle-off is the alt+o binding.
+					this.showStatus("Already in plan mode. Use the confirmation popup or alt+o to exit.");
+					return;
+				}
+				const description = this.parsePlanArgs(text);
+				this.enterPlanModeInternal({ description });
 				return;
 			}
 			if (text === "/quit") {
@@ -2780,6 +2919,7 @@ export class InteractiveMode {
 				break;
 
 			case "tool_execution_start": {
+				this.pendingToolArgs?.set(event.toolCallId, event.args);
 				let component = this.pendingTools.get(event.toolCallId);
 				if (!component) {
 					component = new ToolExecutionComponent(
@@ -2819,6 +2959,11 @@ export class InteractiveMode {
 					this.pendingTools.delete(event.toolCallId);
 					this.ui.requestRender();
 				}
+				if (!event.isError && (event.toolName === "edit" || event.toolName === "write")) {
+					const args = this.pendingToolArgs?.get(event.toolCallId);
+					this.recordRecentFile(event.toolName, args);
+				}
+				this.pendingToolArgs?.delete(event.toolCallId);
 				break;
 			}
 
@@ -3522,6 +3667,241 @@ export class InteractiveMode {
 		this.showStatus(`Thinking blocks: ${this.hideThinkingBlock ? "hidden" : "visible"}`);
 	}
 
+	private setSidebarVisible(visible: boolean): void {
+		this.sidebarVisible = visible;
+		if (visible) {
+			this.ui.setLeftPanel(this.sidebarContent, this.settingsManager.getSidebarWidth());
+		} else {
+			this.ui.setLeftPanel(undefined, 0);
+		}
+		this.ui.invalidate();
+		this.ui.requestRender();
+	}
+
+	private toggleSidebar(): void {
+		// Transient toggle: flip the current effective visibility without
+		// touching the persistent setting. The next /sidebar on|off (or
+		// applyRuntimeSettings on session rebind) snaps back to the setting.
+		const next = !this.sidebarVisible;
+		this.setSidebarVisible(next);
+		this.showStatus(`Sidebar: ${next ? "visible" : "hidden"}`);
+	}
+
+	/**
+	 * Toggle plan mode. When entering: sets module-level state, snapshots
+	 * the current active tool set for restoration, and switches to the
+	 * plan-mode tool set. When exiting: clears state, restores the
+	 * previous tool set. No popup is shown from this path — use the
+	 * `plan(ready=true)` tool for confirmation, or `/plan` to force
+	 * the popup in a future phase.
+	 */
+	private togglePlanMode(): void {
+		if (this.inPlanMode) {
+			this.exitPlanModeInternal();
+		} else {
+			this.enterPlanModeInternal({ description: undefined });
+		}
+	}
+
+	private enterPlanModeInternal(opts: { description?: string }): void {
+		if (this.inPlanMode) return;
+		const sessionId = this.sessionManager.getSessionId();
+		if (!sessionId) {
+			this.showStatus("Cannot enter plan mode: no active session");
+			return;
+		}
+		enterPlanMode({ sessionId, description: opts.description });
+		this.inPlanMode = true;
+		// Snapshot the current tool set so we can restore it on exit.
+		this.planModeActiveToolNames = this.session.getActiveToolNames().slice();
+		this.session.setActiveToolsByName(["read", "grep", "find", "ls", "ask", "write", "edit", "plan"]);
+		// Wire the choice handler so the plan tool (running in a
+		// separate call stack) can drive the per-choice side effects.
+		setPlanModeChoiceHandler((choice) => {
+			return this.handlePlanModeChoice(choice);
+		});
+		const draft = getDraftRoot();
+		this.showStatus(
+			opts.description
+				? `Plan mode: on (${opts.description}) — drafts to ${draft ?? "?"}`
+				: `Plan mode: on — drafts to ${draft ?? "?"}`,
+		);
+		this.footer.setPlanModeActive(true);
+		this.ui.invalidate();
+	}
+
+	private exitPlanModeInternal(_reason: "execute" | "aborted" | "manual" = "manual"): void {
+		if (!this.inPlanMode) return;
+		setPlanModeChoiceHandler(null);
+		exitPlanMode();
+		this.inPlanMode = false;
+		if (this.planModeActiveToolNames.length > 0) {
+			this.session.setActiveToolsByName(this.planModeActiveToolNames);
+		}
+		this.planModeActiveToolNames = [];
+		this.showStatus("Plan mode: off");
+		this.footer.setPlanModeActive(false);
+		this.ui.invalidate();
+	}
+
+	/**
+	 * Per-choice side effect for the plan-mode confirmation popup.
+	 * Called from the plan tool via the module-level choice handler.
+	 *
+	 *   1. 执行      — write the final plan to <cwd>/.pi/<slug>.md,
+	 *                    exit plan mode; model then implements it
+	 *   2. 继续完善  — stay in plan mode (no-op)
+	 *   3. 新 session — exit plan mode, start a fresh session, surface
+	 *                    the old draft path so the new session can read it
+	 */
+	private async handlePlanModeChoice(choice: 1 | 2 | 3): Promise<void> {
+		if (!this.inPlanMode) return;
+		switch (choice) {
+			case 1: {
+				const finalPath = await this.writePlanModeFinal();
+				this.exitPlanModeInternal("execute");
+				if (finalPath) {
+					this.showStatus(`Plan written to ${finalPath} — plan mode off`);
+				}
+				return;
+			}
+			case 2:
+				// Stay in plan mode; the model continues refining.
+				this.showStatus("Plan mode: continue refining");
+				return;
+			case 3: {
+				const oldSessionId = this.sessionManager.getSessionId();
+				const oldDraftPath = getDraftRoot() ? `${getDraftRoot()}/current.md` : undefined;
+				this.exitPlanModeInternal("execute");
+				try {
+					const result = await this.runtimeHost.newSession();
+					if (result.cancelled) return;
+					this.renderCurrentSessionState();
+					this.showStatus(
+						oldDraftPath
+							? `New session. Approved plan: ${oldDraftPath} (session ${oldSessionId ?? "?"})`
+							: "New session. (Approved plan path unknown.)",
+					);
+				} catch (error: unknown) {
+					await this.handleFatalRuntimeError("Failed to create new session", error);
+				}
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Write the plan draft at `~/.pi/draft/<session-id>/current.md`
+	 * to `<cwd>/.pi/<slug>.md`. Returns the final path, or undefined
+	 * if the draft is missing/empty (the popup already warned the user).
+	 */
+	private async writePlanModeFinal(): Promise<string | undefined> {
+		const draftRoot = getDraftRoot();
+		if (!draftRoot) return undefined;
+		const draftPath = path.join(draftRoot, "current.md");
+		let content: string;
+		try {
+			content = await readFile(draftPath, "utf-8");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException)?.code;
+			if (code === "ENOENT") return undefined;
+			throw error;
+		}
+		if (content.trim().length === 0) return undefined;
+		const cwd = this.sessionManager.getCwd();
+		const piDir = path.join(cwd, ".pi");
+		await mkdir(piDir, { recursive: true });
+		const slug = derivePlanSlug(content);
+		const finalPath = path.join(piDir, `${slug}.md`);
+		await writeFile(finalPath, content, "utf-8");
+		return finalPath;
+	}
+
+	/**
+	 * Parse /plan args. Returns the description (trimmed, non-empty)
+	 * or undefined if the user just typed `/plan` with no args.
+	 */
+	private parsePlanArgs(text: string): string | undefined {
+		const m = text.match(/^\/plan(?:\s+(.*))?$/);
+		if (!m) return undefined;
+		const rest = (m[1] ?? "").trim();
+		return rest.length > 0 ? rest : undefined;
+	}
+
+	private recordRecentFile(toolName: string, rawArgs: unknown): void {
+		const args = (rawArgs ?? {}) as { path?: unknown; file_path?: unknown };
+		const raw =
+			typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : undefined;
+		if (!raw) return;
+		const cwd = this.sessionManager.getCwd();
+		const abs = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+		const tool = toolName === "write" ? "write" : "edit";
+		const now = Date.now();
+
+		const existing = this.recentFiles.findIndex((f) => f.absPath === abs);
+		if (existing >= 0) {
+			this.recentFiles.splice(existing, 1);
+		}
+		this.recentFiles.unshift({ absPath: abs, lastTouchedAt: now, tool });
+		if (this.recentFiles.length > MAX_RECENT_FILES) {
+			this.recentFiles.length = MAX_RECENT_FILES;
+		}
+
+		// Persist the new list so it survives session resume. A new custom
+		// entry is appended on the current leaf; loadRecentFiles() picks the
+		// latest one on the current branch.
+		persistRecentFiles(this.sessionManager, this.recentFiles);
+
+		// Auto-show sidebar when the first file is recorded
+		if (!this.sidebarVisible) {
+			this.setSidebarVisible(true);
+		}
+
+		this.sidebarContent?.invalidate?.();
+		this.ui.requestRender();
+	}
+
+	private openRecentFile(index: number): void {
+		const file = this.recentFiles[index - 1];
+		if (!file) {
+			this.showStatus(`No ${index}${ordinalSuffix(index)} recent file`);
+			return;
+		}
+		this.openFileInEditor(file.absPath);
+	}
+
+	private openFileInEditor(filePath: string): void {
+		const editorCmd = process.env.VISUAL || process.env.EDITOR;
+		if (!editorCmd) {
+			this.showWarning("No editor configured. Set $VISUAL or $EDITOR environment variable.");
+			return;
+		}
+		const cwd = this.sessionManager.getCwd();
+		const abs = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+		if (!fs.existsSync(abs)) {
+			this.showWarning(`File not found: ${abs}`);
+			return;
+		}
+		const editorPath = isWslEnvironment() ? toWindowsPath(abs) : abs;
+		this.showStatus(`Opening: ${editorPath}`);
+		// Launch the editor as a fully-detached child so the TUI keeps
+		// running. The user explicitly asked for the editor to not pause pi.
+		try {
+			const [editor, ...editorArgs] = editorCmd.split(" ");
+			const child = spawn(editor, [...editorArgs, editorPath], {
+				stdio: "ignore",
+				detached: true,
+				shell: process.platform === "win32",
+			});
+			child.on("error", () => {
+				this.showWarning(`Failed to launch editor: ${editorCmd}`);
+			});
+			child.unref();
+		} catch {
+			this.showWarning(`Failed to launch editor: ${editorCmd}`);
+		}
+	}
+
 	private async openExternalEditor(): Promise<void> {
 		// Determine editor (respect $VISUAL, then $EDITOR)
 		const editorCmd = process.env.VISUAL || process.env.EDITOR;
@@ -3792,11 +4172,13 @@ export class InteractiveMode {
 		const done = () => {
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.editor);
+			this.ui.setBottomPanelHeight(this.savedBottomPanelHeight);
 			this.ui.setFocus(this.editor);
 		};
 		const { component, focus } = create(done);
 		this.editorContainer.clear();
 		this.editorContainer.addChild(component);
+		this.ui.setBottomPanelHeight(999);
 		this.ui.setFocus(focus);
 		this.ui.requestRender();
 	}

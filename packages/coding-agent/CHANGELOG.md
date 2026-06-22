@@ -15,6 +15,8 @@
 ### Changed
 
 - Shared the `jiti` instance across extensions in a single `loadExtensions` call and loaded them in parallel via `Promise.all` instead of awaiting each one sequentially. Cuts `rl.loadExtensions` from ~540ms to ~290ms on Bun (-45%); smaller win on Node.
+- `Home` / `End` now move the cursor to the start / end of the current line while focus is in the input box, matching the documented behavior of `tui.editor.cursorLineStart` / `tui.editor.cursorLineEnd`. They no longer scroll the chat history from the input box; use `PageUp` / `PageDown` (which already bind to `app.viewport.scrollUp` / `app.viewport.scrollDown`) to scroll the chat, or rebind `home` / `end` to `app.viewport.scrollTop` / `app.viewport.scrollBottom` in `keybindings.json` if you want the old behavior.
+- The chat now snaps to the bottom when the user submits input (Enter), so the message they just sent and the assistant's reply are visible even if they had scrolled up to read older history before pressing Enter.
 
 ### Fixed
 

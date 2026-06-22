@@ -32,6 +32,12 @@ export interface EditorComponent extends Component {
 	/** Called when text changes */
 	onChange?: (text: string) => void;
 
+	/**
+	 * Called when the autocomplete dropdown opens or closes. Lets the host
+	 * resize a fixed bottom panel so the full dropdown stays visible.
+	 */
+	onAutocompleteToggle?: (active: boolean) => void;
+
 	// =========================================================================
 	// History support (optional)
 	// =========================================================================

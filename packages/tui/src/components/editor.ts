@@ -289,6 +289,14 @@ export class Editor implements Component, Focusable {
 
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
+
+	/**
+	 * Fired when the autocomplete dropdown opens or closes. Lets the host
+	 * (e.g. a fixed bottom panel) resize itself so the full dropdown stays
+	 * visible instead of being clipped.
+	 */
+	public onAutocompleteToggle?: (active: boolean) => void;
+
 	public disableSubmit: boolean = false;
 
 	constructor(tui: TUI, theme: EditorTheme, options: EditorOptions = {}) {
@@ -2196,7 +2204,11 @@ export class Editor implements Component, Focusable {
 			this.autocompleteList.setSelectedIndex(bestMatchIndex);
 		}
 
+		const wasActive = this.autocompleteState !== null;
 		this.autocompleteState = state;
+		if (!wasActive) {
+			this.onAutocompleteToggle?.(true);
+		}
 	}
 
 	private cancelAutocompleteRequest(): void {
@@ -2210,9 +2222,13 @@ export class Editor implements Component, Focusable {
 	}
 
 	private clearAutocompleteUi(): void {
+		const wasActive = this.autocompleteState !== null;
 		this.autocompleteState = null;
 		this.autocompleteList = undefined;
 		this.autocompletePrefix = "";
+		if (wasActive) {
+			this.onAutocompleteToggle?.(false);
+		}
 	}
 
 	private cancelAutocomplete(): void {

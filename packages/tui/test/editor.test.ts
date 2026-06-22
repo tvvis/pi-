@@ -2171,6 +2171,80 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
+		it("fires onAutocompleteToggle on dropdown open/close transitions only", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const events: boolean[] = [];
+			editor.onAutocompleteToggle = (active) => {
+				events.push(active);
+			};
+
+			const mockProvider: AutocompleteProvider = {
+				getSuggestions: async (lines, _cursorLine, cursorCol, options) => {
+					if (!options.force) return null;
+					const prefix = (lines[0] || "").slice(0, cursorCol);
+					const all = [
+						{ value: "src/", label: "src/" },
+						{ value: "src.txt", label: "src.txt" },
+					];
+					const items = all.filter((f) => f.value.startsWith(prefix));
+					return items.length > 0 ? { items, prefix } : null;
+				},
+				applyCompletion,
+			};
+
+			editor.setAutocompleteProvider(mockProvider);
+
+			// Tab on empty prompt -> force mode with multiple suggestions -> opens
+			editor.handleInput("\t");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			assert.deepStrictEqual(events, [true], "fires once on open");
+
+			// Narrowing while open re-suggests but must not fire the toggle again
+			editor.handleInput("s");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			assert.deepStrictEqual(events, [true], "no duplicate fire on update");
+
+			// Escape cancels -> closes
+			editor.handleInput("\x1b");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+			assert.deepStrictEqual(events, [true, false], "fires false on close");
+		});
+
+		it("fires onAutocompleteToggle(false) when accepting a suggestion", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const events: boolean[] = [];
+			editor.onAutocompleteToggle = (active) => {
+				events.push(active);
+			};
+
+			const mockProvider: AutocompleteProvider = {
+				getSuggestions: async (_lines, _cursorLine, _cursorCol, options) => {
+					if (!options.force) return null;
+					return {
+						items: [
+							{ value: "src/", label: "src/" },
+							{ value: "src.txt", label: "src.txt" },
+						],
+						prefix: "",
+					};
+				},
+				applyCompletion,
+			};
+
+			editor.setAutocompleteProvider(mockProvider);
+
+			editor.handleInput("\t");
+			await flushAutocomplete();
+			assert.deepStrictEqual(events, [true]);
+
+			// Accept with Tab -> closes
+			editor.handleInput("\t");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+			assert.deepStrictEqual(events, [true, false]);
+		});
+
 		it("keeps suggestions open when typing in force mode (Tab-triggered)", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 

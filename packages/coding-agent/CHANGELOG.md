@@ -4,13 +4,17 @@
 
 ### Added
 
-- Added Ark provider to `/login`, model scoping, and CLI env-var docs (`ARK_API_KEY`).
 - Added `ctrl+q` as a default binding for `app.exit` (exit when editor is empty), alongside `ctrl+d`.
 - Added `ctx.mode` to extension contexts so extensions can distinguish TUI, RPC, JSON, and print mode.
 - Added `hideStartupExtras` setting to hide the model scope line, keybinding hints, and onboarding tips at startup while still showing the version line.
 - Added `examples/extensions/per-model-compaction.ts`: a per-model auto-compaction extension that triggers on a configurable context-window ratio (e.g. 0.4 for `minimax-cn/*`, 0.2 for `deepseek/*`) and prompts the user to compress, start a new session, or continue, configured under `perModelCompaction` in `settings.json`. Suppresses the prompt until the first `turn_start` after a model switch.
 - Added `npm run build:fast` at both the repo root and `packages/coding-agent` to build the Bun-compiled single-file binary (`packages/coding-agent/dist/pi`). Use this in place of `npm run build` for day-to-day development: ~0.5s startup vs. ~20s for the Node.js `dist/cli.js` script. The `build:binary` script remains as the underlying implementation; `build:fast` is the recommended alias.
 - Added `modelAppendSystemPrompts` setting: a map of model glob pattern (minimatch, case-insensitive, matched against `provider/modelId` and `modelId`) to a system prompt fragment appended after the default prompt and any regular `APPEND_SYSTEM.md` / `--append-system-prompt` content. Values follow the existing convention: a file path is read, otherwise the string is used verbatim. Multiple matching entries are appended in insertion order. The base system prompt is rebuilt when the active model changes.
+- Persisted the sidebar recent files list in the session as a custom entry (`sidebar-recent-files`) so the list survives `quit` + `pi --session <resume>`. The list is loaded on session rebind (initial start, `/resume`, `/fork`) and follows the current branch path. `/new` starts fresh.
+- Mouse wheel now scrolls the chat history: wheel up over the chat area shows older messages, wheel down returns toward the most recent. Wheel events over the input area (and over the sidebar, when visible) are consumed at the TUI layer so the editor no longer receives the raw SGR mouse escape sequence. The terminal's SGR mouse tracking can be disabled with `PI_TUI_NO_MOUSE=1`.
+- Added `sidebarWidth` setting (range 10-80, default 20) to control the width of the recent-files sidebar column. Replaces the previous hardcoded constant.
+- Added `setProjectSidebarVisible` API on `SettingsManager` so `sidebarVisible` can be set at project scope (overrides the global value via the existing settings merge). The merged getter `getSidebarVisible()` already picks it up, so editing `.pi/settings.json` directly works too.
+- Added plan mode: `/plan` (with optional `<description>`) and `alt+o` toggle put the agent into a restricted mode where `write`/`edit` are confined to `~/.pi/draft/<session-id>/` (other paths throw `PlanModeWriteError`), `bash` is disabled, and a new `plan` tool lets the model signal a plan is ready for user confirmation. The active tool set switches to `[read, grep, find, ls, ask, write, edit, plan]`. State is in-memory only and does not survive `/resume`. Phase 1 ships the state, slash command, keybinding, tool guards, and the `plan` tool stub; the confirmation popup, system-prompt injection, and final plan write come in later phases.
 
 ### Changed
 
@@ -21,6 +25,7 @@
 ### Fixed
 
 - Fixed opening and listing very large JSONL session files by reading session entries line-by-line instead of materializing the full file as one string ([#5231](https://github.com/earendil-works/pi/issues/5231)).
+- The fixed bottom input panel now grows while the autocomplete dropdown (`@` file picker, `/` commands) is open, so the full list of suggestions stays visible instead of being clipped by the panel's reserved height. The baseline height is restored when the dropdown closes.
 
 ### Removed
 

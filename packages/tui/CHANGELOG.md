@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added SGR mouse tracking on `ProcessTerminal.start` (`\x1b[?1002h` button events + `\x1b[?1006h` SGR encoding), and the matching disable sequences on stop. Set `PI_TUI_NO_MOUSE=1` to opt out (useful over SSH where per-event TCP latency is noticeable).
+- Added `TUI.scrollUp` / `TUI.scrollDown` / `TUI.scrollToBottom` / `TUI.getViewportTopOffset` / `TUI.getMaxViewportTopOffset` / `TUI.isAtBottom` for scrolling the main content. `scrollUp` anchors the viewport on a specific content line so new content arriving at the bottom does not push the user out of their reading position; scrolling back to the natural bottom resumes auto-following.
+- Added `TUI.onMouseWheel` and `TUI.onMouseButton` callbacks. The TUI eats SGR mouse sequences at the input layer so the focused component never sees the raw escape (no more `\x1b[<64;...M` being inserted as text into the editor).
+- Exported `parseSgrMouse` and `SgrMouseEvent` / `SgrMouseButton` for consumers that want to interpret mouse events themselves.
+- Added `home` to the default bindings of `tui.editor.cursorLineStart` and `end` to `tui.editor.cursorLineEnd`, so `Home` / `End` move the cursor to the start / end of the current line in the editor. Consumers that still want them to do something else can override the bindings in their keybindings config.
+- Added `onAutocompleteToggle` callback on `Editor` (and the `EditorComponent` interface) that fires when the autocomplete dropdown opens or closes, so hosts can resize a fixed bottom panel and keep the full suggestion list visible instead of having it clipped.
+
+### Changed
+
+- The viewport is now sized to exactly `terminal.rows`: each render writes the visible window and nothing else. The previous "write everything, let the terminal scrollback handle the overflow" model has been replaced with a per-render crop of the rendered content, which makes the scrollable viewport and the existing left-panel anchoring work consistently.
+
 ## [0.78.0] - 2026-05-29
 
 ### Fixed

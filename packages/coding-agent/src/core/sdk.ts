@@ -240,6 +240,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			defaultProvider: settingsManager.getDefaultProvider(),
 			defaultModelId: settingsManager.getDefaultModel(),
 			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
+			getThinkingLevelForModel: (provider, modelId) => settingsManager.getThinkingLevelForModel(provider, modelId),
 			modelRegistry,
 		});
 		model = result.model;
@@ -256,12 +257,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	if (thinkingLevel === undefined && hasExistingSession) {
 		thinkingLevel = hasThinkingEntry
 			? (existingSession.thinkingLevel as ThinkingLevel)
-			: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
+			: model
+				? (settingsManager.getThinkingLevelForModel(model.provider, model.id) ??
+					settingsManager.getDefaultThinkingLevel() ??
+					DEFAULT_THINKING_LEVEL)
+				: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
 	}
 
-	// Fall back to settings default
+	// Fall back to settings: per-model override first, then global default.
 	if (thinkingLevel === undefined) {
-		thinkingLevel = settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
+		thinkingLevel = model
+			? (settingsManager.getThinkingLevelForModel(model.provider, model.id) ??
+				settingsManager.getDefaultThinkingLevel() ??
+				DEFAULT_THINKING_LEVEL)
+			: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
 	}
 
 	// Clamp to model capabilities

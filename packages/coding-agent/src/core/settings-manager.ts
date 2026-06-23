@@ -79,6 +79,13 @@ export interface Settings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	/**
+	 * Per-model thinking level overrides, keyed by `provider/modelId`.
+	 * Takes precedence over `defaultThinkingLevel` when switching to that model.
+	 * When the user changes a model's thinking level via the TUI, the new level
+	 * is written here so subsequent switches back to the same model remember it.
+	 */
+	thinkingLevelsByModel?: Record<string, "off" | "minimal" | "low" | "medium" | "high" | "xhigh">;
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
@@ -116,6 +123,8 @@ export interface Settings {
 	editorPaddingX?: number; // Horizontal padding for input editor (default: 0)
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
+	sidebarVisible?: boolean; // Show the sidebar column (default: true)
+	sidebarWidth?: number; // Sidebar column width in terminal cells (default: 20, range: 10-80)
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
@@ -670,6 +679,50 @@ export class SettingsManager {
 		this.save();
 	}
 
+	/**
+	 * Get the per-model thinking level override for `provider/modelId`.
+	 * Returns undefined if no override is configured for this model.
+	 */
+	getThinkingLevelForModel(
+		provider: string,
+		modelId: string,
+	): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined {
+		const key = `${provider}/${modelId}`;
+		return this.settings.thinkingLevelsByModel?.[key];
+	}
+
+	/**
+	 * Persist a per-model thinking level override. Subsequent switches to this
+	 * model will use this level instead of the global `defaultThinkingLevel`.
+	 */
+	setThinkingLevelForModel(
+		provider: string,
+		modelId: string,
+		level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh",
+	): void {
+		const key = `${provider}/${modelId}`;
+		const existing = this.globalSettings.thinkingLevelsByModel ?? {};
+		if (existing[key] === level) return;
+		this.globalSettings.thinkingLevelsByModel = { ...existing, [key]: level };
+		this.markModified("thinkingLevelsByModel");
+		this.save();
+	}
+
+	/**
+	 * Remove a per-model thinking level override. The model will fall back to
+	 * `defaultThinkingLevel` again.
+	 */
+	clearThinkingLevelForModel(provider: string, modelId: string): void {
+		const key = `${provider}/${modelId}`;
+		const existing = this.globalSettings.thinkingLevelsByModel;
+		if (!existing || !(key in existing)) return;
+		const next = { ...existing };
+		delete next[key];
+		this.globalSettings.thinkingLevelsByModel = Object.keys(next).length > 0 ? next : undefined;
+		this.markModified("thinkingLevelsByModel");
+		this.save();
+	}
+
 	getTransport(): TransportSetting {
 		return this.settings.transport ?? "auto";
 	}
@@ -1080,6 +1133,40 @@ export class SettingsManager {
 	setShowHardwareCursor(enabled: boolean): void {
 		this.globalSettings.showHardwareCursor = enabled;
 		this.markModified("showHardwareCursor");
+		this.save();
+	}
+
+	getSidebarVisible(): boolean {
+		return this.settings.sidebarVisible ?? true;
+	}
+
+	setSidebarVisible(visible: boolean): void {
+		this.globalSettings.sidebarVisible = visible;
+		this.markModified("sidebarVisible");
+		this.save();
+	}
+
+	setProjectSidebarVisible(visible: boolean): void {
+		const projectSettings = structuredClone(this.projectSettings);
+		projectSettings.sidebarVisible = visible;
+		this.markProjectModified("sidebarVisible");
+		this.saveProjectSettings(projectSettings);
+	}
+
+	getSidebarWidth(): number {
+		const width = this.settings.sidebarWidth;
+		if (typeof width !== "number" || !Number.isFinite(width)) {
+			return 20;
+		}
+		return Math.max(10, Math.min(80, Math.floor(width)));
+	}
+
+	setSidebarWidth(width: number): void {
+		if (!Number.isFinite(width)) {
+			throw new Error(`Invalid sidebarWidth setting: ${String(width)}`);
+		}
+		this.globalSettings.sidebarWidth = Math.max(10, Math.min(80, Math.floor(width)));
+		this.markModified("sidebarWidth");
 		this.save();
 	}
 

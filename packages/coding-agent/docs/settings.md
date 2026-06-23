@@ -18,6 +18,7 @@ Edit directly or use `/settings` for common options.
 | `defaultProvider` | string | - | Default provider (e.g., `"anthropic"`, `"openai"`) |
 | `defaultModel` | string | - | Default model ID |
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` |
+| `thinkingLevelsByModel` | object | - | Per-model thinking level overrides keyed by `"provider/modelId"`. Takes precedence over `defaultThinkingLevel`. Updated automatically when the level is changed via the TUI |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
 
@@ -34,6 +35,20 @@ Edit directly or use `/settings` for common options.
 }
 ```
 
+#### thinkingLevelsByModel
+
+```json
+{
+  "defaultThinkingLevel": "medium",
+  "thinkingLevelsByModel": {
+    "anthropic/claude-opus-4-7": "high",
+    "openai/gpt-5": "xhigh"
+  }
+}
+```
+
+When switching to a model listed in `thinkingLevelsByModel`, that level is used instead of `defaultThinkingLevel`. Switching to an unlisted model falls back to `defaultThinkingLevel` (or the built-in default if unset). The current model's level does not carry over to other models.
+
 ### UI & Display
 
 | Setting | Type | Default | Description |
@@ -47,6 +62,7 @@ Edit directly or use `/settings` for common options.
 | `treeFilterMode` | string | `"default"` | Default filter for `/tree`: `"default"`, `"no-tools"`, `"user-only"`, `"labeled-only"`, `"all"` |
 | `editorPaddingX` | number | `0` | Horizontal padding for input editor (0-3) |
 | `autocompleteMaxVisible` | number | `5` | Max visible items in autocomplete dropdown (3-20) |
+| `sidebarWidth` | number | `20` | Sidebar column width in terminal cells (10-80) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 
 ### Telemetry

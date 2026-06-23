@@ -34,7 +34,6 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"kimi-coding": "kimi-for-coding",
 	"cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
 	"cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
-	ark: "glm-5.1",
 	xiaomi: "mimo-v2.5-pro",
 	"xiaomi-token-plan-cn": "mimo-v2.5-pro",
 	"xiaomi-token-plan-ams": "mimo-v2.5-pro",
@@ -483,6 +482,8 @@ export async function findInitialModel(options: {
 	defaultProvider?: string;
 	defaultModelId?: string;
 	defaultThinkingLevel?: ThinkingLevel;
+	/** Lookup per-model thinking level override for `provider/modelId`. */
+	getThinkingLevelForModel?: (provider: string, modelId: string) => ThinkingLevel | undefined;
 	modelRegistry: ModelRegistry;
 }): Promise<InitialModelResult> {
 	const {
@@ -493,8 +494,12 @@ export async function findInitialModel(options: {
 		defaultProvider,
 		defaultModelId,
 		defaultThinkingLevel,
+		getThinkingLevelForModel,
 		modelRegistry,
 	} = options;
+
+	const resolveThinkingLevel = (provider: string, modelId: string): ThinkingLevel =>
+		getThinkingLevelForModel?.(provider, modelId) ?? defaultThinkingLevel ?? DEFAULT_THINKING_LEVEL;
 
 	let model: Model<Api> | undefined;
 	let thinkingLevel: ThinkingLevel = DEFAULT_THINKING_LEVEL;
@@ -517,9 +522,10 @@ export async function findInitialModel(options: {
 
 	// 2. Use first model from scoped models (skip if continuing/resuming)
 	if (scopedModels.length > 0 && !isContinuing) {
+		const first = scopedModels[0];
 		return {
-			model: scopedModels[0].model,
-			thinkingLevel: scopedModels[0].thinkingLevel ?? defaultThinkingLevel ?? DEFAULT_THINKING_LEVEL,
+			model: first.model,
+			thinkingLevel: first.thinkingLevel ?? resolveThinkingLevel(first.model.provider, first.model.id),
 			fallbackMessage: undefined,
 		};
 	}
@@ -529,9 +535,7 @@ export async function findInitialModel(options: {
 		const found = modelRegistry.find(defaultProvider, defaultModelId);
 		if (found) {
 			model = found;
-			if (defaultThinkingLevel) {
-				thinkingLevel = defaultThinkingLevel;
-			}
+			thinkingLevel = resolveThinkingLevel(model.provider, model.id);
 			return { model, thinkingLevel, fallbackMessage: undefined };
 		}
 	}
@@ -545,12 +549,21 @@ export async function findInitialModel(options: {
 			const defaultId = defaultModelPerProvider[provider];
 			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
 			if (match) {
-				return { model: match, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+				return {
+					model: match,
+					thinkingLevel: resolveThinkingLevel(match.provider, match.id),
+					fallbackMessage: undefined,
+				};
 			}
 		}
 
 		// If no default found, use first available
-		return { model: availableModels[0], thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+		const first = availableModels[0];
+		return {
+			model: first,
+			thinkingLevel: resolveThinkingLevel(first.provider, first.id),
+			fallbackMessage: undefined,
+		};
 	}
 
 	// 5. No model found

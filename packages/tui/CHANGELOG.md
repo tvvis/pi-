@@ -9,7 +9,8 @@
 - Added `TUI.onMouseWheel` and `TUI.onMouseButton` callbacks. The TUI eats SGR mouse sequences at the input layer so the focused component never sees the raw escape (no more `\x1b[<64;...M` being inserted as text into the editor).
 - Exported `parseSgrMouse` and `SgrMouseEvent` / `SgrMouseButton` for consumers that want to interpret mouse events themselves.
 - Added `home` to the default bindings of `tui.editor.cursorLineStart` and `end` to `tui.editor.cursorLineEnd`, so `Home` / `End` move the cursor to the start / end of the current line in the editor. Consumers that still want them to do something else can override the bindings in their keybindings config.
-- Added `onAutocompleteToggle` callback on `Editor` (and the `EditorComponent` interface) that fires when the autocomplete dropdown opens or closes, so hosts can resize a fixed bottom panel and keep the full suggestion list visible instead of having it clipped.
+- Added `onAutocompleteToggle` callback on `Editor` (and the `EditorComponent` interface) that fires when the autocomplete dropdown opens or closes, so hosts can react to autocomplete state changes.
+- Added `TUI.setBottomPanelMinChatRows(rows)` to clamp the fixed bottom panel to `terminalRows - rows`. Combined with a large `setBottomPanelHeight`, the panel auto-sizes to its rendered content (growing with multi-line editor input or the autocomplete dropdown) while always leaving `rows` for the scrollable viewport, and adapts to terminal resizes automatically since it is re-evaluated each render.
 
 ### Changed
 

@@ -230,11 +230,15 @@ const _BEDROCK_PROVIDER_ID = "amazon-bedrock";
 const BUILT_IN_MODEL_PROVIDERS = new Set<string>(getProviders());
 
 /**
- * Default rows reserved for the fixed bottom panel (editor + footer) when the
- * autocomplete dropdown is closed. The panel grows past this while the
- * dropdown is open (see {@link InteractiveMode.handleAutocompleteToggle}).
+ * Minimum rows kept free for the chat viewport above the fixed bottom panel
+ * (editor + footer). The panel auto-sizes to its rendered content — growing
+ * with multi-line input or the @-file / slash-command autocomplete dropdown —
+ * but is clamped to `terminalRows - BOTTOM_PANEL_MIN_CHAT_ROWS` so it never
+ * eats the whole screen. Re-evaluated each render, so it adapts to resizes.
  */
-const BOTTOM_PANEL_BASELINE_HEIGHT = 5;
+const BOTTOM_PANEL_MIN_CHAT_ROWS = 4;
+/** Uncapped maxHeight for the bottom panel; the real cap is the min-chat-rows reserve. */
+const BOTTOM_PANEL_MAX_HEIGHT = 999;
 
 export function isApiKeyLoginProvider(
 	providerId: string,
@@ -744,12 +748,12 @@ export class InteractiveMode {
 		const bottomPanel = this.ui.getBottomPanel();
 		bottomPanel.addChild(this.editorContainer);
 		bottomPanel.addChild(this.footer);
-		this.ui.setBottomPanelHeight(BOTTOM_PANEL_BASELINE_HEIGHT); // Reserve up to 5 rows: editor(1-3) + footer(2-3)
-
-		// Grow the bottom panel while the editor's autocomplete dropdown is open
-		// so the full list of @-file / slash-command suggestions stays visible
-		// instead of being clipped by the fixed panel height.
-		this.defaultEditor.onAutocompleteToggle = (active) => this.handleAutocompleteToggle(active);
+		// Let the panel auto-size to its content (multi-line input, autocomplete
+		// dropdown) up to terminalRows - BOTTOM_PANEL_MIN_CHAT_ROWS, so wrapping
+		// text and the @-file picker stay fully visible instead of being clipped
+		// by a fixed height. The min-chat-rows reserve keeps context above it.
+		this.ui.setBottomPanelHeight(BOTTOM_PANEL_MAX_HEIGHT);
+		this.ui.setBottomPanelMinChatRows(BOTTOM_PANEL_MIN_CHAT_ROWS);
 
 		this.ui.addChild(this.mainColumn);
 		this.setSidebarVisible(this.sidebarVisible);
@@ -2208,25 +2212,7 @@ export class InteractiveMode {
 	}
 
 	/** Saved bottom panel height before an extension overlay was shown. */
-	private savedBottomPanelHeight: number = BOTTOM_PANEL_BASELINE_HEIGHT;
-
-	/**
-	 * Grow or shrink the fixed bottom panel when the editor's autocomplete
-	 * dropdown opens/closes. While open, the panel is allowed to take most of
-	 * the terminal so the full list of suggestions stays visible; the actual
-	 * height is still capped by what the panel renders. Restores the baseline
-	 * height when the dropdown closes.
-	 */
-	private handleAutocompleteToggle(active: boolean): void {
-		if (active) {
-			// Keep at least a few rows of chat context above the panel; the panel
-			// only takes as many rows as it actually renders.
-			const termRows = this.ui.terminal.rows;
-			this.ui.setBottomPanelHeight(Math.max(BOTTOM_PANEL_BASELINE_HEIGHT, termRows - 4));
-		} else {
-			this.ui.setBottomPanelHeight(BOTTOM_PANEL_BASELINE_HEIGHT);
-		}
-	}
+	private savedBottomPanelHeight: number = BOTTOM_PANEL_MAX_HEIGHT;
 
 	/**
 	 * Show a text input for extensions.
@@ -2343,8 +2329,6 @@ export class InteractiveMode {
 			// Wire up callbacks from the default editor
 			newEditor.onSubmit = this.defaultEditor.onSubmit;
 			newEditor.onChange = this.defaultEditor.onChange;
-			// Grow the bottom panel for this editor's autocomplete dropdown too.
-			newEditor.onAutocompleteToggle = (active) => this.handleAutocompleteToggle(active);
 
 			// Copy text from previous editor
 			newEditor.setText(currentText);
@@ -2393,9 +2377,6 @@ export class InteractiveMode {
 
 		this.editorContainer.addChild(this.editor as Component);
 		this.ui.setFocus(this.editor as Component);
-		// A freshly switched editor starts without an open autocomplete dropdown;
-		// reset the panel to its baseline height.
-		this.ui.setBottomPanelHeight(BOTTOM_PANEL_BASELINE_HEIGHT);
 		this.ui.requestRender();
 	}
 

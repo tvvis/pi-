@@ -173,7 +173,13 @@ describe("TUI resize handling", () => {
 		});
 	});
 
-	it("skips full re-render on height changes in Termux", async () => {
+	it("triggers full re-render on height changes (including in Termux)", async () => {
+		// The new viewport design writes exactly `height` lines to the
+		// terminal every frame, so resizing always changes the visible
+		// window — a full redraw is required. Termux used to skip the
+		// redraw to avoid replaying history when the software keyboard
+		// toggles, but with the viewport fix the redraw is fast (only
+		// the visible window, not the full content).
 		await withEnv({ TERMUX_VERSION: "1" }, async () => {
 			const terminal = new LoggingVirtualTerminal(40, 10);
 			const tui = new TUI(terminal);
@@ -183,17 +189,19 @@ describe("TUI resize handling", () => {
 			component.lines = Array.from({ length: 20 }, (_, i) => `Line ${i}`);
 			tui.start();
 			await terminal.waitForRender();
-			terminal.clearWrites();
 
 			const initialRedraws = tui.fullRedraws;
-			for (const height of [15, 8, 14, 11]) {
-				terminal.resize(40, height);
-				await terminal.waitForRender();
-			}
+			terminal.resize(40, 15);
+			await terminal.waitForRender();
+			terminal.resize(40, 8);
+			await terminal.waitForRender();
+			terminal.resize(40, 14);
+			await terminal.waitForRender();
 
-			assert.strictEqual(tui.fullRedraws, initialRedraws, "Height change should not trigger full redraw");
-			assert.ok(!terminal.getWrites().includes("\x1b[2J"), "Height change should not clear the screen");
-			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Height change should not clear scrollback");
+			assert.ok(
+				tui.fullRedraws > initialRedraws,
+				"Height change should trigger a full redraw of the new visible window",
+			);
 
 			const viewport = terminal.getViewport();
 			assert.ok(viewport.join("\n").includes("Line 19"), "Latest content remains visible after resize");
@@ -226,32 +234,31 @@ describe("TUI resize handling", () => {
 });
 
 describe("TUI content shrinkage", () => {
-	it("clears empty rows when content shrinks significantly", async () => {
+	it("clears empty rows when content shrinks (no full redraw required)", async () => {
+		// The new viewport design keeps the visible window at exactly
+		// `height` lines (padded with empty rows). When the source content
+		// shrinks, the differential path clears the now-empty rows on its
+		// own, so a full redraw is no longer required for shrinkage.
 		const terminal = new VirtualTerminal(40, 10);
 		const tui = new TUI(terminal);
-		tui.setClearOnShrink(true); // Explicitly enable (may be disabled via env var)
 		const component = new TestComponent();
 		tui.addChild(component);
 
-		// Start with many lines
 		component.lines = ["Line 0", "Line 1", "Line 2", "Line 3", "Line 4", "Line 5"];
 		tui.start();
 		await terminal.waitForRender();
 
-		const initialRedraws = tui.fullRedraws;
+		const redrawsAfterStart = tui.fullRedraws;
 
-		// Shrink to fewer lines
 		component.lines = ["Line 0", "Line 1"];
 		tui.requestRender();
 		await terminal.waitForRender();
 
-		// Should have triggered a full redraw to clear empty rows
-		assert.ok(tui.fullRedraws > initialRedraws, "Content shrinkage should trigger full redraw");
+		assert.strictEqual(tui.fullRedraws, redrawsAfterStart, "Content shrinkage should not require a full redraw");
 
 		const viewport = terminal.getViewport();
 		assert.ok(viewport[0]?.includes("Line 0"), "First line preserved");
 		assert.ok(viewport[1]?.includes("Line 1"), "Second line preserved");
-		// Lines below should be empty (cleared)
 		assert.strictEqual(viewport[2]?.trim(), "", "Line 2 should be cleared");
 		assert.strictEqual(viewport[3]?.trim(), "", "Line 3 should be cleared");
 
@@ -503,7 +510,7 @@ describe("TUI differential rendering", () => {
 		tui.stop();
 	});
 
-	it("appends after a shrink without another full redraw once the viewport is reset", async () => {
+	it("appends after a shrink without an extra full redraw", async () => {
 		const terminal = new VirtualTerminal(20, 5);
 		const tui = new TUI(terminal);
 		const component = new TestComponent();
@@ -513,20 +520,23 @@ describe("TUI differential rendering", () => {
 		tui.start();
 		await terminal.waitForRender();
 
-		const initialRedraws = tui.fullRedraws;
+		const redrawsAfterStart = tui.fullRedraws;
 
 		component.lines = ["Line 0", "Line 1"];
 		tui.requestRender();
 		await terminal.waitForRender();
 
-		assert.ok(tui.fullRedraws > initialRedraws, "Shrink should reset the viewport with a full redraw");
-		const redrawsAfterShrink = tui.fullRedraws;
+		assert.strictEqual(
+			tui.fullRedraws,
+			redrawsAfterStart,
+			"Shrink should not require a full redraw under the new viewport",
+		);
 
 		component.lines = ["Line 0", "Line 1", "Line 2"];
 		tui.requestRender();
 		await terminal.waitForRender();
 
-		assert.strictEqual(tui.fullRedraws, redrawsAfterShrink, "Append should stay on the differential path");
+		assert.strictEqual(tui.fullRedraws, redrawsAfterStart, "Append should stay on the differential path");
 		assert.deepStrictEqual(terminal.getViewport(), ["Line 0", "Line 1", "Line 2", "", ""]);
 
 		tui.stop();
@@ -585,6 +595,82 @@ describe("TUI differential rendering", () => {
 			"Editor 1",
 			"Editor 2",
 		]);
+
+		tui.stop();
+	});
+});
+
+describe("TUI bottom panel auto-sizing", () => {
+	it("auto-sizes to content but clamps to terminalRows - minChatRows", async () => {
+		const terminal = new VirtualTerminal(20, 10);
+		const tui = new TUI(terminal);
+		const chat = new TestComponent();
+		const panel = new TestComponent();
+		tui.addChild(chat);
+		tui.getBottomPanel().addChild(panel);
+		// Uncapped maxHeight; the min-chat-rows reserve is the real cap.
+		tui.setBottomPanelHeight(999);
+		tui.setBottomPanelMinChatRows(4);
+
+		chat.lines = Array.from({ length: 20 }, (_, i) => `Chat ${i}`);
+
+		// Panel shorter than the reserve cap: takes only what it renders (3 rows).
+		panel.lines = ["BP0", "BP1", "BP2"];
+		tui.start();
+		await terminal.waitForRender();
+
+		let viewport = terminal.getViewport();
+		assert.strictEqual(viewport.length, 10);
+		// Bottom 3 rows are the panel; top 7 are chat.
+		assert.deepStrictEqual(viewport.slice(7), ["BP0", "BP1", "BP2"]);
+		assert.ok(viewport[0]?.startsWith("Chat"), "chat fills the rows above the panel");
+
+		// Panel taller than the reserve cap (10 - 4 = 6): clamped to 6 rows.
+		panel.lines = Array.from({ length: 8 }, (_, i) => `BP${i}`);
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		viewport = terminal.getViewport();
+		assert.strictEqual(viewport.length, 10);
+		// Only BP0..BP5 fit (6 rows); BP6/BP7 are clipped by the chat reserve.
+		assert.deepStrictEqual(viewport.slice(4), ["BP0", "BP1", "BP2", "BP3", "BP4", "BP5"]);
+		// Exactly 4 chat rows remain above the clamped panel.
+		assert.ok(viewport[0]?.startsWith("Chat"));
+		assert.ok(viewport[3]?.startsWith("Chat"));
+
+		tui.stop();
+	});
+
+	it("grows the panel when content expands and shrinks it when content shrinks", async () => {
+		const terminal = new VirtualTerminal(20, 10);
+		const tui = new TUI(terminal);
+		const chat = new TestComponent();
+		const panel = new TestComponent();
+		tui.addChild(chat);
+		tui.getBottomPanel().addChild(panel);
+		tui.setBottomPanelHeight(999);
+		tui.setBottomPanelMinChatRows(2);
+
+		chat.lines = Array.from({ length: 20 }, (_, i) => `Chat ${i}`);
+
+		panel.lines = ["BP0"];
+		tui.start();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport().slice(9), ["BP0"], "1-line panel");
+
+		panel.lines = ["BP0", "BP1", "BP2", "BP3", "BP4"];
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(
+			terminal.getViewport().slice(5),
+			["BP0", "BP1", "BP2", "BP3", "BP4"],
+			"panel grew to 5 rows (under the 10-2=8 cap)",
+		);
+
+		panel.lines = ["BP0"];
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport().slice(9), ["BP0"], "panel shrank back to 1 row");
 
 		tui.stop();
 	});

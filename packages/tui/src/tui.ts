@@ -92,6 +92,36 @@ export const CURSOR_MARKER = "\x1b_pi:c\x07";
 export { visibleWidth };
 
 /**
+ * Parsed SGR mouse event (CSI < B ; X ; Y M|m). The button code is the same
+ * encoding terminals use: 0=left, 1=middle, 2=right, with bits 4-5 for shift/
+ * alt/ctrl modifiers, bit 6 for motion, and the trailing letter distinguishes
+ * press from release. Wheel events use 64/65 regardless of press/release.
+ */
+export type SgrMouseButton = "left" | "middle" | "right" | "none";
+
+export type SgrMouseEvent =
+	| { kind: "wheel"; direction: "up" | "down"; x: number; y: number }
+	| { kind: "press"; button: SgrMouseButton; x: number; y: number }
+	| { kind: "release"; button: SgrMouseButton; x: number; y: number }
+	| { kind: "move"; button: SgrMouseButton; x: number; y: number };
+
+/** Parse a complete SGR mouse escape sequence. Returns undefined for non-mouse input. */
+export function parseSgrMouse(sequence: string): SgrMouseEvent | undefined {
+	const match = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(sequence);
+	if (!match) return undefined;
+	const code = Number.parseInt(match[1]!, 10);
+	const x = Number.parseInt(match[2]!, 10);
+	const y = Number.parseInt(match[3]!, 10);
+	const release = match[4] === "m";
+	if (code === 64) return { kind: "wheel", direction: "up", x, y };
+	if (code === 65) return { kind: "wheel", direction: "down", x, y };
+	const button: SgrMouseButton =
+		(code & 3) === 0 ? "left" : (code & 3) === 1 ? "middle" : (code & 3) === 2 ? "right" : "none";
+	if ((code & 32) !== 0) return { kind: "move", button, x, y };
+	return release ? { kind: "release", button, x, y } : { kind: "press", button, x, y };
+}
+
+/**
  * Anchor position for overlays
  */
 export type OverlayAnchor =
@@ -277,14 +307,153 @@ export class TUI extends Container {
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
 	private static readonly MIN_RENDER_INTERVAL_MS = 16;
-	private cursorRow = 0; // Logical cursor row (end of rendered content)
 	private hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
 	private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
 	private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
-	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
+	private previousViewportStart = 0; // Index in full content where the visible viewport started in the last render
 	private fullRedrawCount = 0;
 	private stopped = false;
+
+	/**
+	 * Fixed-width panel reserved on the left side of the screen. When set,
+	 * main children render at `width - leftPanelWidth` and the panel content
+	 * is composited on the left of each visible row, staying put while the
+	 * main content scrolls.
+	 */
+	private leftPanel: Component | undefined;
+	private leftPanelWidth: number = 0;
+
+	/**
+	 * Install a fixed-width panel on the left side of the screen. The panel
+	 * is rendered on top of the main content at column 0 and does not
+	 * participate in the main content's scroll. Main children are rendered
+	 * at `width - leftPanelWidth` so they fit in the remaining space.
+	 */
+	setLeftPanel(component: Component | undefined, width: number): void {
+		this.leftPanel = component;
+		this.leftPanelWidth = Math.max(0, width);
+		this.invalidate();
+	}
+
+	getLeftPanelWidth(): number {
+		return this.leftPanelWidth;
+	}
+
+	/**
+	 * Fixed panel at the bottom of the screen, outside the scrollable viewport.
+	 * The bottom N rows are always rendered here regardless of scroll position.
+	 */
+	private _bottomPanel: Container = new Container();
+	private _bottomPanelMaxHeight: number = 0;
+	/**
+	 * Minimum rows always kept free for the scrollable viewport above the fixed
+	 * bottom panel. The panel auto-sizes to its rendered content but is clamped
+	 * to `terminalRows - _bottomPanelMinChatRows` so it never eats the whole
+	 * screen. 0 disables the clamp (legacy behavior: cap via maxHeight only).
+	 */
+	private _bottomPanelMinChatRows: number = 0;
+
+	/** Container for fixed-bottom panel content (editor, footer, etc.). */
+	getBottomPanel(): Container {
+		return this._bottomPanel;
+	}
+
+	/** Set the maximum rows reserved for the fixed bottom panel. Actual height is determined at render time. */
+	setBottomPanelHeight(height: number): void {
+		this._bottomPanelMaxHeight = Math.max(0, height);
+		this.requestRender(true);
+	}
+
+	/**
+	 * Set the minimum rows to keep free for the scrollable viewport above the
+	 * fixed bottom panel. When set, the panel auto-sizes to its content but is
+	 * clamped to `terminalRows - rows`, so an editor (or its autocomplete
+	 * dropdown) can grow the panel without overflowing the terminal. This
+	 * adapts to terminal resizes automatically since it is re-evaluated each
+	 * render against the current terminal height.
+	 */
+	setBottomPanelMinChatRows(rows: number): void {
+		this._bottomPanelMinChatRows = Math.max(0, Math.floor(rows));
+		this.requestRender(true);
+	}
+
+	/**
+	 * Index in the full content where the visible viewport starts. null
+	 * means “follow the bottom” — the viewport always shows the most recent
+	 * `height` lines and shifts down as new content is appended. A non-null
+	 * value means the user has scrolled to a specific line and the viewport
+	 * stays anchored there even as content grows (so the user does not lose
+	 * their place while reading history).
+	 */
+	private viewportTopLine: number | null = null;
+	private maxViewportTopOffset = 0;
+
+	/** Optional callback fired for wheel events that the TUI did not consume itself. */
+	public onMouseWheel?: (event: Extract<SgrMouseEvent, { kind: "wheel" }>) => void;
+
+	/** Optional callback fired for press/release/move events. */
+	public onMouseButton?: (event: SgrMouseEvent) => void;
+
+	/**
+	 * Scroll the main content up by `lines` (toward older content). The
+	 * anchor moves to a lower line index; if the user was already at the
+	 * top, this is a no-op. Triggers a re-render.
+	 */
+	scrollUp(lines = 1): void {
+		const step = Math.max(1, lines);
+		const current = this.viewportTopLine ?? this.maxViewportTopOffset;
+		const next = Math.max(0, current - step);
+		if (next === this.viewportTopLine) return;
+		this.viewportTopLine = next;
+		this.requestRender(true);
+	}
+
+	/**
+	 * Scroll the main content down by `lines` (toward newer content).
+	 * No-op if already at the bottom. Triggers a re-render.
+	 */
+	scrollDown(lines = 1): void {
+		const step = Math.max(1, lines);
+		const current = this.viewportTopLine ?? this.maxViewportTopOffset;
+		const next = Math.min(this.maxViewportTopOffset, current + step);
+		// Returning to the bottom (next === maxOffset) collapses to null so
+		// the viewport resumes auto-following new content.
+		const resolved = next >= this.maxViewportTopOffset ? null : next;
+		if (resolved === this.viewportTopLine) return;
+		this.viewportTopLine = resolved;
+		this.requestRender(true);
+	}
+
+	/** Jump to the bottom of the content (newest visible). Triggers a re-render. */
+	scrollToBottom(): void {
+		if (this.viewportTopLine === null) return;
+		this.viewportTopLine = null;
+		this.requestRender(true);
+	}
+
+	/** Jump to the top of the content (oldest visible). Triggers a re-render. */
+	scrollToTop(): void {
+		if (this.viewportTopLine === 0) return;
+		this.viewportTopLine = 0;
+		this.requestRender(true);
+	}
+
+	/** Current scroll offset (0 = bottom, positive = scrolled up by N lines). */
+	getViewportTopOffset(): number {
+		if (this.viewportTopLine === null) return 0;
+		return Math.max(0, this.maxViewportTopOffset - this.viewportTopLine);
+	}
+
+	/** Maximum possible offset given the current content and terminal height. */
+	getMaxViewportTopOffset(): number {
+		return this.maxViewportTopOffset;
+	}
+
+	/** True when the viewport is at the bottom (no manual scroll). */
+	isAtBottom(): boolean {
+		return this.viewportTopLine === null;
+	}
 
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
@@ -595,6 +764,7 @@ export class TUI extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		this._bottomPanel.invalidate();
 		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
 	}
 
@@ -657,10 +827,9 @@ export class TUI extends Container {
 			this.previousLines = [];
 			this.previousWidth = -1; // -1 triggers widthChanged, forcing a full clear
 			this.previousHeight = -1; // -1 triggers heightChanged, forcing a full clear
-			this.cursorRow = 0;
 			this.hardwareCursorRow = 0;
 			this.maxLinesRendered = 0;
-			this.previousViewportTop = 0;
+			this.previousViewportStart = 0;
 			if (this.renderTimer) {
 				clearTimeout(this.renderTimer);
 				this.renderTimer = undefined;
@@ -722,6 +891,22 @@ export class TUI extends Container {
 		// Consume terminal cell size responses without blocking unrelated input.
 		if (this.consumeCellSizeResponse(data)) {
 			return;
+		}
+
+		// SGR mouse events are intercepted at the TUI level: wheels drive the
+		// viewport scroll, clicks go to the optional callback, and the focused
+		// component never sees the raw escape sequence (which would otherwise
+		// be inserted as text or no-op'd confusingly).
+		if (data.startsWith("\x1b[<")) {
+			const mouse = parseSgrMouse(data);
+			if (mouse) {
+				if (mouse.kind === "wheel" && this.onMouseWheel) {
+					this.onMouseWheel(mouse);
+				} else if (mouse.kind !== "wheel" && this.onMouseButton) {
+					this.onMouseButton(mouse);
+				}
+				return;
+			}
 		}
 
 		// Global debug key handler (Shift+Ctrl+D)
@@ -929,7 +1114,7 @@ export class TUI extends Container {
 	}
 
 	/** Composite all overlays into content lines (sorted by focusOrder, higher = on top). */
-	private compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
+	private compositeOverlays(lines: string[], termWidth: number, termHeight: number, viewportStart = -1): string[] {
 		if (this.overlayStack.length === 0) return lines;
 		const result = [...lines];
 
@@ -971,12 +1156,12 @@ export class TUI extends Container {
 			result.push("");
 		}
 
-		const viewportStart = Math.max(0, workingHeight - termHeight);
+		const resolvedViewportStart = viewportStart >= 0 ? viewportStart : Math.max(0, workingHeight - termHeight);
 
 		// Composite each overlay
 		for (const { overlayLines, row, col, w } of rendered) {
 			for (let i = 0; i < overlayLines.length; i++) {
-				const idx = viewportStart + row + i;
+				const idx = resolvedViewportStart + row + i;
 				if (idx >= 0 && idx < result.length) {
 					// Defensive: truncate overlay line to declared width before compositing
 					// (components should already respect width, but this ensures it)
@@ -985,6 +1170,59 @@ export class TUI extends Container {
 					result[idx] = this.compositeLineAt(result[idx], truncatedOverlayLine, col, w, termWidth);
 				}
 			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Composite the fixed left panel on top of the visible viewport. The
+	 * panel is rendered at `leftPanelWidth` and painted at column 0 of each
+	 * visible row, regardless of where the main content's scroll viewport
+	 * is anchored. This makes the panel behave like a fixed sidebar in
+	 * traditional IDEs.
+	 */
+	private compositeLeftPanel(lines: string[], termWidth: number, termHeight: number, viewportStart = -1): string[] {
+		if (!this.leftPanel) return lines;
+		const panelWidth = this.leftPanelWidth;
+		if (panelWidth <= 0) return lines;
+
+		// Render the panel at its declared width
+		const panelLines = this.leftPanel.render(panelWidth);
+
+		// Pad result to at least terminal height (matches the overlay logic)
+		const workingHeight = Math.max(lines.length, termHeight);
+		const result = lines.slice();
+		while (result.length < workingHeight) {
+			result.push("");
+		}
+
+		// The TUI viewport shows `termHeight` consecutive lines of the full
+		// content, starting at `viewportStart` (the bottom by default, or
+		// further up if the user has scrolled). We must paint the panel on
+		// the visible rows (those shown on screen), not on the top of the
+		// full content (which is scrolled out of view when the main content
+		// is tall and the user has scrolled up).
+		const resolvedViewportStart = viewportStart >= 0 ? viewportStart : Math.max(0, workingHeight - termHeight);
+		const contentRows = Math.min(panelLines.length, termHeight);
+		for (let row = 0; row < contentRows; row++) {
+			const idx = resolvedViewportStart + row;
+			if (idx >= result.length) break;
+			const panelLine = panelLines[row] ?? "";
+			// Truncate the panel line to its declared width
+			const truncated = visibleWidth(panelLine) > panelWidth ? sliceByColumn(panelLine, 0, panelWidth) : panelLine;
+			result[idx] = this.compositeLineAt(result[idx] ?? "", truncated, 0, panelWidth, termWidth);
+		}
+
+		// Fill the rest of the visible panel area with just a separator at
+		// the right edge. Without this, rows below the panel content have
+		// no visual border separating them from the main content.
+		const sepCol = panelWidth - 1;
+		const sepLine = "\x1b[38;5;239m│\x1b[39m"; // borderMuted color
+		for (let row = contentRows; row < termHeight; row++) {
+			const idx = resolvedViewportStart + row;
+			if (idx >= result.length) break;
+			result[idx] = this.compositeLineAt(result[idx] ?? "", sepLine, sepCol, 1, termWidth);
 		}
 
 		return result;
@@ -1128,30 +1366,109 @@ export class TUI extends Container {
 		if (this.stopped) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
+		// Calculate content width first (accounts for left panel/sidebar)
+		// so the bottom panel renders at the same width as scrollable content.
+		const contentWidth = this.leftPanelWidth > 0 ? Math.max(1, width - this.leftPanelWidth) : width;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
-		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
-		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
-		let viewportTop = prevViewportTop;
-		let hardwareCursorRow = this.hardwareCursorRow;
-		const computeLineDiff = (targetRow: number): number => {
-			const currentScreenRow = hardwareCursorRow - prevViewportTop;
-			const targetScreenRow = targetRow - viewportTop;
-			return targetScreenRow - currentScreenRow;
-		};
 
-		// Render all components to get new lines
-		let newLines = this.render(width);
+		// Render fixed bottom panel first to get its actual height. This runs
+		// before the scrollable viewport so we know how many rows to reserve.
+		// The panel auto-sizes to its rendered content, clamped both by the
+		// configured maxHeight and by the min-chat-rows reserve (so the panel
+		// can grow with the editor / autocomplete dropdown without overflowing
+		// the terminal, and without a separate resize handler).
+		let bottomLines: string[] = [];
+		let actualBottomHeight = 0;
+		if (this._bottomPanelMaxHeight > 0 && this._bottomPanel.children.length > 0) {
+			bottomLines = this._bottomPanel.render(contentWidth);
+			const chatReserveCap = Math.max(0, height - this._bottomPanelMinChatRows);
+			actualBottomHeight = Math.min(bottomLines.length, this._bottomPanelMaxHeight, chatReserveCap);
+		}
+		const scrollableHeight = height - actualBottomHeight;
+
+		// Render all components to get the full scrollable content.
+		// If a left panel is installed, children render narrower so their
+		// output fits in the remaining space; the panel itself is composited
+		// onto each visible row after the viewport is applied (see below).
+		const fullLines = this.render(contentWidth);
+
+		// Shift main content right by panelWidth so it sits beside the panel
+		// rather than overlapping it. Without this, the main content starts
+		// at col 0 and leaves panelWidth empty columns on the right edge.
+		if (this.leftPanel && this.leftPanelWidth > 0) {
+			const pad = " ".repeat(this.leftPanelWidth);
+			for (let i = 0; i < fullLines.length; i++) {
+				fullLines[i] = pad + fullLines[i];
+			}
+		}
+
+		// Compute where the visible viewport starts in the full content.
+		// null (auto-follow) means the natural bottom; otherwise the user
+		// has scrolled to a specific anchor line and the viewport stays put
+		// even as new content is appended at the bottom of the scrollable area.
+		const maxOffset = Math.max(0, fullLines.length - scrollableHeight);
+		this.maxViewportTopOffset = maxOffset;
+		if (this.viewportTopLine !== null) {
+			if (maxOffset === 0) {
+				// Content fits in the viewport (or shrank past the anchor);
+				// there is no scroll position, so resume auto-following.
+				this.viewportTopLine = null;
+			} else if (this.viewportTopLine > maxOffset) {
+				this.viewportTopLine = maxOffset;
+			} else {
+				this.viewportTopLine = Math.max(0, this.viewportTopLine);
+			}
+		}
+		const viewportStart = this.viewportTopLine ?? maxOffset;
 
 		// Composite overlays into the rendered lines (before differential compare)
+		let composited = fullLines;
 		if (this.overlayStack.length > 0) {
-			newLines = this.compositeOverlays(newLines, width, height);
+			composited = this.compositeOverlays(composited, width, scrollableHeight, viewportStart);
 		}
+
+		// Composite the left panel on top of the visible viewport.
+		// Done after overlay compositing and after the diff display logic has
+		// chosen which lines to show, so the panel stays anchored at the top
+		// of the screen regardless of how the main content scrolls.
+		if (this.leftPanel && this.leftPanelWidth > 0) {
+			composited = this.compositeLeftPanel(composited, width, scrollableHeight, viewportStart);
+		}
+
+		// Crop the composited full content to the visible viewport (scrollable
+		// part only). Lines outside `[viewportStart, viewportStart + scrollableHeight)`
+		// are not written to the terminal; they exist in memory only and become
+		// visible when the user scrolls the viewport.
+		const newLines: string[] = [];
+		const visibleEnd = Math.min(composited.length, viewportStart + scrollableHeight);
+		for (let i = viewportStart; i < visibleEnd; i++) {
+			newLines.push(composited[i] ?? "");
+		}
+		// Pad the scrollable area when content is shorter than the viewport.
+		while (newLines.length < scrollableHeight) {
+			newLines.push("");
+		}
+
+		// Append the fixed bottom panel (always visible, never scrolls).
+		// Apply the same left-panel padding as the scrollable content.
+		const bottomPad = this.leftPanel && this.leftPanelWidth > 0 ? " ".repeat(this.leftPanelWidth) : "";
+		for (let i = 0; i < actualBottomHeight; i++) {
+			newLines.push(bottomPad + (bottomLines[i] ?? ""));
+		}
+		// Pad to full terminal height (defensive, should already be exact).
+		while (newLines.length < height) {
+			newLines.push("");
+		}
+
+		// The diff state uses line indices relative to the visible viewport.
+		const prevViewportStart = heightChanged ? 0 : this.previousViewportStart;
+		const computeLineDiff = (targetRow: number): number => targetRow - this.hardwareCursorRow;
 
 		// Extract cursor position before applying line resets (marker must be found first)
 		const cursorPos = this.extractCursorPosition(newLines, height);
 
-		newLines = this.applyLineResets(newLines);
+		this.applyLineResets(newLines);
 
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean): void => {
@@ -1167,16 +1484,9 @@ export class TUI extends Container {
 			}
 			buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
-			this.cursorRow = Math.max(0, newLines.length - 1);
-			this.hardwareCursorRow = this.cursorRow;
-			// Reset max lines when clearing, otherwise track growth
-			if (clear) {
-				this.maxLinesRendered = newLines.length;
-			} else {
-				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
-			}
-			const bufferLength = Math.max(height, newLines.length);
-			this.previousViewportTop = Math.max(0, bufferLength - height);
+			this.hardwareCursorRow = Math.max(0, newLines.length - 1);
+			this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
+			this.previousViewportStart = 0;
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
@@ -1215,11 +1525,11 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Content shrunk below the working area and no overlays - re-render to clear empty rows
-		// (overlays need the padding, so only do this when no overlays are active)
-		// Configurable via setClearOnShrink() or PI_CLEAR_ON_SHRINK=0 env var
-		if (this.clearOnShrink && newLines.length < this.maxLinesRendered && this.overlayStack.length === 0) {
-			logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
+		// Viewport offset changed: the entire visible window may be different.
+		// Force a full redraw of the new window.
+		const viewportOffsetChanged = prevViewportStart !== viewportStart;
+		if (viewportOffsetChanged) {
+			logRedraw(`viewport offset changed (${prevViewportStart} -> ${viewportStart})`);
 			fullRender(true);
 			return;
 		}
@@ -1254,63 +1564,41 @@ export class TUI extends Container {
 		// No changes - but still need to update hardware cursor position if it moved
 		if (firstChanged === -1) {
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousViewportTop = prevViewportTop;
 			this.previousHeight = height;
+			this.previousViewportStart = viewportStart;
 			return;
 		}
 
 		// All changes are in deleted lines (nothing to render, just clear)
 		if (firstChanged >= newLines.length) {
-			if (this.previousLines.length > newLines.length) {
-				let buffer = "\x1b[?2026h";
-				buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
-				// Move to end of new content (clamp to 0 for empty content)
-				const targetRow = Math.max(0, newLines.length - 1);
-				if (targetRow < prevViewportTop) {
-					logRedraw(`deleted lines moved viewport up (${targetRow} < ${prevViewportTop})`);
-					fullRender(true);
-					return;
-				}
-				const lineDiff = computeLineDiff(targetRow);
-				if (lineDiff > 0) buffer += `\x1b[${lineDiff}B`;
-				else if (lineDiff < 0) buffer += `\x1b[${-lineDiff}A`;
-				buffer += "\r";
-				// Clear extra lines without scrolling
-				const extraLines = this.previousLines.length - newLines.length;
-				if (extraLines > height) {
-					logRedraw(`extraLines > height (${extraLines} > ${height})`);
-					fullRender(true);
-					return;
-				}
-				if (extraLines > 0) {
-					buffer += "\x1b[1B";
-				}
+			// The visible viewport is always exactly `height` lines, so a
+			// "deleted" tail is the trailing empty padding. We simply clear
+			// those rows.
+			let buffer = "\x1b[?2026h";
+			buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
+			const targetRow = Math.max(0, newLines.length - 1);
+			const lineDiff = computeLineDiff(targetRow);
+			if (lineDiff > 0) buffer += `\x1b[${lineDiff}B`;
+			else if (lineDiff < 0) buffer += `\x1b[${-lineDiff}A`;
+			buffer += "\r";
+			const extraLines = Math.max(0, this.previousLines.length - newLines.length);
+			if (extraLines > 0) {
+				buffer += "\x1b[1B";
 				for (let i = 0; i < extraLines; i++) {
 					buffer += "\r\x1b[2K";
 					if (i < extraLines - 1) buffer += "\x1b[1B";
 				}
-				if (extraLines > 0) {
-					buffer += `\x1b[${extraLines}A`;
-				}
-				buffer += "\x1b[?2026l";
-				this.terminal.write(buffer);
-				this.cursorRow = targetRow;
-				this.hardwareCursorRow = targetRow;
+				buffer += `\x1b[${extraLines}A`;
 			}
+			buffer += "\x1b[?2026l";
+			this.terminal.write(buffer);
+			this.hardwareCursorRow = targetRow;
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
-			this.previousViewportTop = prevViewportTop;
-			return;
-		}
-
-		// Differential rendering can only touch what was actually visible.
-		// If the first changed line is above the previous viewport, we need a full redraw.
-		if (firstChanged < prevViewportTop) {
-			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
-			fullRender(true);
+			this.previousViewportStart = viewportStart;
 			return;
 		}
 
@@ -1318,20 +1606,7 @@ export class TUI extends Container {
 		// Build buffer with all updates wrapped in synchronized output
 		let buffer = "\x1b[?2026h"; // Begin synchronized output
 		buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
-		const prevViewportBottom = prevViewportTop + height - 1;
 		const moveTargetRow = appendStart ? firstChanged - 1 : firstChanged;
-		if (moveTargetRow > prevViewportBottom) {
-			const currentScreenRow = Math.max(0, Math.min(height - 1, hardwareCursorRow - prevViewportTop));
-			const moveToBottom = height - 1 - currentScreenRow;
-			if (moveToBottom > 0) {
-				buffer += `\x1b[${moveToBottom}B`;
-			}
-			const scroll = moveTargetRow - prevViewportBottom;
-			buffer += "\r\n".repeat(scroll);
-			prevViewportTop += scroll;
-			viewportTop += scroll;
-			hardwareCursorRow = moveTargetRow;
-		}
 
 		// Move cursor to first changed line (use hardwareCursorRow for actual position)
 		const lineDiff = computeLineDiff(moveTargetRow);
@@ -1383,23 +1658,7 @@ export class TUI extends Container {
 		}
 
 		// Track where cursor ended up after rendering
-		let finalCursorRow = renderEnd;
-
-		// If we had more lines before, clear them and move cursor back
-		if (this.previousLines.length > newLines.length) {
-			// Move to end of new content first if we stopped before it
-			if (renderEnd < newLines.length - 1) {
-				const moveDown = newLines.length - 1 - renderEnd;
-				buffer += `\x1b[${moveDown}B`;
-				finalCursorRow = newLines.length - 1;
-			}
-			const extraLines = this.previousLines.length - newLines.length;
-			for (let i = newLines.length; i < this.previousLines.length; i++) {
-				buffer += "\r\n\x1b[2K";
-			}
-			// Move cursor back to end of new content
-			buffer += `\x1b[${extraLines}A`;
-		}
+		const finalCursorRow = renderEnd;
 
 		buffer += "\x1b[?2026l"; // End synchronized output
 
@@ -1409,11 +1668,10 @@ export class TUI extends Container {
 			const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
 			const debugData = [
 				`firstChanged: ${firstChanged}`,
-				`viewportTop: ${viewportTop}`,
-				`cursorRow: ${this.cursorRow}`,
+				`viewportStart: ${viewportStart}`,
 				`height: ${height}`,
 				`lineDiff: ${lineDiff}`,
-				`hardwareCursorRow: ${hardwareCursorRow}`,
+				`hardwareCursorRow: ${this.hardwareCursorRow}`,
 				`renderEnd: ${renderEnd}`,
 				`finalCursorRow: ${finalCursorRow}`,
 				`cursorPos: ${JSON.stringify(cursorPos)}`,
@@ -1436,13 +1694,10 @@ export class TUI extends Container {
 		this.terminal.write(buffer);
 
 		// Track cursor position for next render
-		// cursorRow tracks end of content (for viewport calculation)
 		// hardwareCursorRow tracks actual terminal cursor position (for movement)
-		this.cursorRow = Math.max(0, newLines.length - 1);
 		this.hardwareCursorRow = finalCursorRow;
 		// Track terminal's working area (grows but doesn't shrink unless cleared)
 		this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
-		this.previousViewportTop = Math.max(prevViewportTop, finalCursorRow - height + 1);
 
 		// Position hardware cursor for IME
 		this.positionHardwareCursor(cursorPos, newLines.length);
@@ -1451,6 +1706,7 @@ export class TUI extends Container {
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
+		this.previousViewportStart = viewportStart;
 	}
 
 	/**

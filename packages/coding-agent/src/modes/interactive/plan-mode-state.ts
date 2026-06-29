@@ -18,12 +18,6 @@ export interface PlanModeState {
 	/** Absolute path of the draft directory: ~/.pi/draft/<sessionId>/ */
 	draftRoot: string;
 	enteredAt: number;
-	/**
-	 * True when plan mode was entered without a description. The system
-	 * prompt section is injected on the next user message instead of
-	 * immediately on entry.
-	 */
-	pendingPromptInjection: boolean;
 }
 
 let currentState: PlanModeState | null = null;
@@ -52,19 +46,12 @@ export function enterPlanMode(opts: EnterPlanModeOptions): PlanModeState {
 		description: opts.description,
 		draftRoot: join(homedir(), ".pi", "draft", opts.sessionId),
 		enteredAt: Date.now(),
-		pendingPromptInjection: opts.description === undefined,
 	};
 	return currentState;
 }
 
 export function exitPlanMode(): void {
 	currentState = null;
-}
-
-export function clearPendingPromptInjection(): void {
-	if (currentState) {
-		currentState.pendingPromptInjection = false;
-	}
 }
 
 /**

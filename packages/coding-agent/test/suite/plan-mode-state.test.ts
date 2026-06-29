@@ -39,15 +39,13 @@ describe("plan-mode state lifecycle", () => {
 		expect(state.sessionId).toBe(SESSION_ID);
 		expect(state.draftRoot).toBe(join(homedir(), ".pi", "draft", SESSION_ID));
 		expect(state.description).toBeUndefined();
-		expect(state.pendingPromptInjection).toBe(true);
 		expect(isInPlanMode()).toBe(true);
 		expect(getDraftRoot()).toBe(state.draftRoot);
 	});
 
-	it("enter with description sets description and clears pendingPromptInjection", () => {
+	it("enter with description sets description", () => {
 		const state = enterPlanMode({ sessionId: SESSION_ID, description: "add rate limiting" });
 		expect(state.description).toBe("add rate limiting");
-		expect(state.pendingPromptInjection).toBe(false);
 	});
 
 	it("exit clears state", () => {

@@ -6,6 +6,7 @@ import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
+import { isInPlanMode, PlanModeBashDisabledError } from "../../modes/interactive/plan-mode-state.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
 import { waitForChildProcess } from "../../utils/child-process.ts";
 import {
@@ -286,6 +287,9 @@ export function createBashToolDefinition(
 			onUpdate?,
 			_ctx?,
 		) {
+			if (isInPlanMode()) {
+				throw new PlanModeBashDisabledError();
+			}
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });

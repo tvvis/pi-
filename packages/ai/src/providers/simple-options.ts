@@ -1,4 +1,12 @@
-import type { Api, Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets, ThinkingLevel } from "../types.ts";
+import type {
+	Api,
+	Model,
+	ModelThinkingLevel,
+	SimpleStreamOptions,
+	StreamOptions,
+	ThinkingBudgets,
+	ThinkingLevel,
+} from "../types.ts";
 
 export function buildBaseOptions(_model: Model<Api>, options?: SimpleStreamOptions, apiKey?: string): StreamOptions {
 	return {
@@ -20,15 +28,21 @@ export function buildBaseOptions(_model: Model<Api>, options?: SimpleStreamOptio
 	};
 }
 
-export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<ThinkingLevel, "xhigh"> | undefined {
-	return effort === "xhigh" ? "high" : effort;
+/**
+ * Collapse "xhigh" to "high" for token-budget purposes; pass other standard
+ * levels and `undefined` through unchanged. Custom labels are returned as-is;
+ * the caller (`adjustMaxTokensForThinking`) skips them because they have no
+ * defined budget.
+ */
+export function clampReasoning(effort: ModelThinkingLevel | undefined): Exclude<ThinkingLevel, "xhigh"> | undefined {
+	return effort === "xhigh" ? "high" : (effort as Exclude<ThinkingLevel, "xhigh"> | undefined);
 }
 
 export function adjustMaxTokensForThinking(
 	// Undefined means no explicit caller cap. Use the model cap and fit thinking inside it.
 	baseMaxTokens: number | undefined,
 	modelMaxTokens: number,
-	reasoningLevel: ThinkingLevel,
+	reasoningLevel: ModelThinkingLevel,
 	customBudgets?: ThinkingBudgets,
 ): { maxTokens: number; thinkingBudget: number } {
 	const defaultBudgets: ThinkingBudgets = {
@@ -40,13 +54,17 @@ export function adjustMaxTokensForThinking(
 	const budgets = { ...defaultBudgets, ...customBudgets };
 
 	const minOutputTokens = 1024;
-	const level = clampReasoning(reasoningLevel)!;
-	let thinkingBudget = budgets[level]!;
+	const level = clampReasoning(reasoningLevel);
+	if (!level || !(level in budgets)) {
+		// Custom or "off" levels have no token budget; pass the model cap through unchanged.
+		return { maxTokens: modelMaxTokens, thinkingBudget: 0 };
+	}
+	const thinkingBudget: number = budgets[level] ?? 0;
 	const maxTokens =
 		baseMaxTokens === undefined ? modelMaxTokens : Math.min(baseMaxTokens + thinkingBudget, modelMaxTokens);
 
 	if (maxTokens <= thinkingBudget) {
-		thinkingBudget = Math.max(0, maxTokens - minOutputTokens);
+		return { maxTokens, thinkingBudget: Math.max(0, maxTokens - minOutputTokens) };
 	}
 
 	return { maxTokens, thinkingBudget };

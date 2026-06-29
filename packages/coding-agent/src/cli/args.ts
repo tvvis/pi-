@@ -9,13 +9,20 @@ import type { ExtensionFlag } from "../core/extensions/types.ts";
 
 export type Mode = "text" | "json" | "rpc";
 
+/**
+ * The strict subset of `ThinkingLevel` users can pick from the CLI. Custom
+ * per-model labels (e.g. DeepSeek V4's `"max"`) are not selectable via
+ * `--thinking` because the CLI doesn't know which model will be bound.
+ */
+export type CanonicalThinkingLevel = Exclude<ThinkingLevel, string & {}>;
+
 export interface Args {
 	provider?: string;
 	model?: string;
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
-	thinking?: ThinkingLevel;
+	thinking?: CanonicalThinkingLevel;
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
@@ -55,8 +62,8 @@ export interface Args {
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
-export function isValidThinkingLevel(level: string): level is ThinkingLevel {
-	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
+export function isValidThinkingLevel(level: string): level is CanonicalThinkingLevel {
+	return VALID_THINKING_LEVELS.includes(level as CanonicalThinkingLevel);
 }
 
 export function parseArgs(args: string[]): Args {
@@ -347,7 +354,6 @@ ${chalk.bold("Environment Variables:")}
   MOONSHOT_API_KEY                 - Moonshot AI API key
   OPENCODE_API_KEY                 - OpenCode Zen/OpenCode Go API key
   KIMI_API_KEY                     - Kimi For Coding API key
-  ARK_API_KEY                      - Ark (Volcano Engine) API key
   CLOUDFLARE_API_KEY               - Cloudflare API token (Workers AI and AI Gateway)
   CLOUDFLARE_ACCOUNT_ID            - Cloudflare account id (required for both)
   CLOUDFLARE_GATEWAY_ID            - Cloudflare AI Gateway slug (required for AI Gateway)

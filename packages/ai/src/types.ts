@@ -34,7 +34,6 @@ export type KnownProvider =
 	| "opencode-go"
 	| "kimi-coding"
 	| "cloudflare-workers-ai"
-	| "ark"
 	| "cloudflare-ai-gateway"
 	| "xiaomi"
 	| "xiaomi-token-plan-cn"
@@ -43,8 +42,36 @@ export type KnownProvider =
 export type Provider = KnownProvider | string;
 
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
-export type ModelThinkingLevel = "off" | ThinkingLevel;
+/**
+ * What `StreamOptions.reasoning` and `agent.state.thinkingLevel` can hold:
+ * the standard pi levels, `"off"`, plus any custom label declared on a model
+ * via `Model.customThinkingLevels`. The `(string & {})` arm preserves
+ * autocomplete for the known values while still accepting arbitrary labels.
+ */
+export type ModelThinkingLevel = "off" | ThinkingLevel | (string & {});
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
+
+/**
+ * Per-model custom thinking levels. When set on a `Model`, this completely
+ * replaces the standard `thinkingLevelMap` cycle: the TUI shows each `label`
+ * and the provider sends each `value` verbatim — no pi-level indirection.
+ *
+ * Convention: an entry with `label === "off"` (or no entry matching "off")
+ * controls whether reasoning can be disabled. If no entry's label is "off",
+ * reasoning is always on for this model.
+ *
+ * Example: DeepSeek V4 only exposes two native effort tiers, neither of which
+ * maps cleanly to pi's "high" / "xhigh":
+ *
+ *   customThinkingLevels: [
+ *       { label: "high", value: "high" },
+ *       { label: "max",  value: "max"  },
+ *   ]
+ */
+export interface CustomThinkingLevel {
+	label: string;
+	value: string;
+}
 
 /** Token budgets for each thinking level (token-based providers only) */
 export interface ThinkingBudgets {
@@ -136,7 +163,7 @@ export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
 
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
-	reasoning?: ThinkingLevel;
+	reasoning?: ModelThinkingLevel;
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
 }
@@ -384,6 +411,15 @@ export interface Model<TApi extends Api> {
 	 * Missing keys use provider defaults. null marks a level as unsupported.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
+	/**
+	 * Per-model custom thinking levels. When set, this **completely replaces**
+	 * the standard `thinkingLevelMap` cycle for TUI display and provider calls:
+	 * the TUI shows each entry's `label` and the provider sends each entry's
+	 * `value` verbatim. Useful when a model's native effort vocabulary does
+	 * not map cleanly onto pi's `minimal` / `low` / `medium` / `high` / `xhigh`
+	 * (e.g. DeepSeek V4 exposes only `high` and `max`).
+	 */
+	customThinkingLevels?: readonly CustomThinkingLevel[];
 	input: ("text" | "image")[];
 	cost: {
 		input: number; // $/million tokens

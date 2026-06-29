@@ -19,6 +19,8 @@ Edit directly or use `/settings` for common options.
 | `defaultModel` | string | - | Default model ID |
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` |
 | `thinkingLevelsByModel` | object | - | Per-model thinking level overrides keyed by `"provider/modelId"`. Takes precedence over `defaultThinkingLevel`. Updated automatically when the level is changed via the TUI |
+| `thinkingLevelMapOverrides` | object | - | Per-model minimatch-pattern overrides for the built-in thinking-level map (hide or remap levels). See [thinkingLevelMapOverrides](#thinkinglevelmapoverrides) |
+| `customThinkingLevelsOverrides` | object | - | Per-model minimatch-pattern overrides that fully replace the thinking-level cycle with a custom `{label, value}` list. See [customThinkingLevelsOverrides](#customthinkinglevelsoverrides) |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
 
@@ -48,6 +50,52 @@ Edit directly or use `/settings` for common options.
 ```
 
 When switching to a model listed in `thinkingLevelsByModel`, that level is used instead of `defaultThinkingLevel`. Switching to an unlisted model falls back to `defaultThinkingLevel` (or the built-in default if unset). The current model's level does not carry over to other models.
+
+#### thinkingLevelMapOverrides
+
+Overrides for the built-in `thinkingLevelMap` baked into `models.generated.ts`. Each key is a minimatch glob (case-insensitive, matched against `provider/modelId` and `modelId`, same convention as `modelAppendSystemPrompts`). The value uses the same shape as `Model.thinkingLevelMap`: a key mapped to `null` removes that level from the TUI cycle and the provider request, a string remaps the pi level to a different upstream value, and absent keys fall back to the built-in map. Multiple matching patterns are merged in insertion order (later wins for the same key).
+
+```json
+{
+  "thinkingLevelMapOverrides": {
+    "anthropic/claude-opus-4-7": { "xhigh": null },
+    "*sonnet*": { "high": "max-effort" },
+    "deepseek/deepseek-v4-*": {
+      "minimal": null,
+      "low": null,
+      "medium": null,
+      "xhigh": "max"
+    }
+  }
+}
+```
+
+Use cases: hide `xhigh` from a model where it's unreliable, force a specific upstream value when pi is pointed at a proxy, or restrict the TUI cycle to only the levels a third-party endpoint actually accepts.
+
+#### customThinkingLevelsOverrides
+
+Fully replaces a model's thinking-level cycle with a custom `{label, value}` list. Each key is a minimatch glob matched the same way as `thinkingLevelMapOverrides`. The value is an array of `{label, value}` entries that drives the TUI cycle and the upstream request body: the TUI shows each entry's `label` and the provider sends each entry's `value` verbatim — no pi-level indirection. Use this when a model's native effort vocabulary does not map onto pi's `thinkingLevelMap` (e.g. DeepSeek V4 only exposes two native tiers, neither of which is pi's `xhigh`).
+
+```json
+{
+  "customThinkingLevelsOverrides": {
+    "deepseek/deepseek-v4-*": [
+      { "label": "high", "value": "high" },
+      { "label": "max",  "value": "max"  }
+    ],
+    "my-proxy/*": [
+      { "label": "off",  "value": "off"  },
+      { "label": "low",  "value": "low"  },
+      { "label": "big",  "value": "xhigh" }
+    ]
+  }
+}
+```
+
+- The array order is the TUI cycle order (Shift+Tab walks the array).
+- An entry with `label === "off"` is the "no reasoning" option. If no entry's label is `"off"`, reasoning is always on for matching models.
+- Multiple matching patterns are merged: entries with the same `label` are replaced by the later pattern, others are appended.
+- Takes precedence over `thinkingLevelMapOverrides` for matching models.
 
 ### UI & Display
 

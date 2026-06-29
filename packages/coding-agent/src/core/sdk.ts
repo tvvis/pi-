@@ -1,6 +1,13 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai";
+import {
+	clampThinkingLevel,
+	type Message,
+	type Model,
+	streamSimple,
+	withCustomThinkingLevelsOverrides,
+	withThinkingLevelOverrides,
+} from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -248,6 +255,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			modelFallbackMessage = formatNoModelsAvailableMessage();
 		} else if (modelFallbackMessage) {
 			modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
+		}
+	}
+
+	// Apply user's per-model thinking-level overrides so clamp, TUI cycle, and
+	// provider request all see the merged map. Two layers: custom levels first
+	// (full replacement), then map overrides (shallow merge).
+	if (model) {
+		const customLevels = settingsManager.getCustomThinkingLevelsOverridesForModel(model.provider, model.id);
+		if (customLevels) {
+			model = withCustomThinkingLevelsOverrides(model, customLevels);
+		}
+		const mapOverrides = settingsManager.getThinkingLevelMapOverridesForModel(model.provider, model.id);
+		if (Object.keys(mapOverrides).length > 0) {
+			model = withThinkingLevelOverrides(model, mapOverrides);
 		}
 	}
 

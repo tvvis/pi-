@@ -130,6 +130,18 @@ const DEEPSEEK_V4_THINKING_LEVEL_MAP = {
 	xhigh: "max",
 } as const;
 
+/**
+ * DeepSeek V4 exposes only two native effort tiers (`high`, `max`) whose
+ * vocabulary does not map cleanly onto pi's `minimal`/`low`/`medium`/`high`/
+ * `xhigh` ladder. Use a custom-level cycle instead of `thinkingLevelMap`: the
+ * TUI shows the native labels verbatim and the provider sends the native
+ * values verbatim — no pi-level indirection.
+ */
+const DEEPSEEK_V4_CUSTOM_LEVELS = [
+	{ label: "high", value: "high" },
+	{ label: "max", value: "max" },
+] as const;
+
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.1",
 	"gpt-5.2",
@@ -139,10 +151,128 @@ const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.4-nano",
 	"gpt-5.5",
 ]);
+const DEEPSEEK_V4_MODEL_IDS = new Set(["deepseek-v4-flash", "deepseek-v4-pro"]);
+const DEEPSEEK_V4_PROVIDERS = new Set(["deepseek", "opencode-go"]);
 
 function mergeThinkingLevelMap(model: Model<any>, map: NonNullable<Model<any>["thinkingLevelMap"]>): void {
 	model.thinkingLevelMap = { ...model.thinkingLevelMap, ...map };
 }
+
+interface ThinkingLevelRule {
+	/** Predicate that decides if this rule applies to a model. */
+	match: (model: Model<any>) => boolean;
+	/** Entries to merge into the model's thinkingLevelMap. Later rules override earlier keys. */
+	map: NonNullable<Model<any>["thinkingLevelMap"]>;
+}
+
+/**
+ * Declarative per-model overrides for the thinking-level map.
+ *
+ * Each rule pairs a `match` predicate with a `map` of overrides. Rules are
+ * evaluated in array order; later rules win for the same key (because
+ * `mergeThinkingLevelMap` shallow-spreads). To add a new model rule, append
+ * an entry — the table is the single source of truth for which thinking
+ * levels each model supports/remaps.
+ */
+const THINKING_LEVEL_RULES: readonly ThinkingLevelRule[] = [
+	// OpenAI gpt-5 on Responses / Azure Responses APIs: 'off' is not a valid reasoning_effort.
+	{
+		match: (m) =>
+			(m.api === "openai-responses" || m.api === "azure-openai-responses") && m.id.startsWith("gpt-5"),
+		map: { off: null },
+	},
+	// GitHub Copilot gpt-5: 'minimal' is not in their enum; route to 'low'.
+	{
+		match: (m) => m.provider === "github-copilot" && m.id.startsWith("gpt-5"),
+		map: { minimal: "low" },
+	},
+	// OpenAI Responses (direct): 'off' maps to the upstream 'none' sentinel for selected models.
+	{
+		match: (m) =>
+			m.api === "openai-responses" &&
+			m.provider === "openai" &&
+			OPENAI_RESPONSES_NONE_REASONING_MODELS.has(m.id),
+		map: { off: "none" },
+	},
+	// OpenAI gpt-5.2/5.3/5.4/5.5 expose the 'xhigh' effort tier natively.
+	{
+		match: (m) => supportsOpenAiXhigh(m.id),
+		map: { xhigh: "xhigh" },
+	},
+	// OpenAI gpt-5.5: 'minimal' tier is not exposed.
+	{
+		match: (m) => m.provider === "openai" && m.id === "gpt-5.5",
+		map: { minimal: null },
+	},
+	// OpenAI gpt-5.5-pro: only medium/high/xhigh are exposed.
+	{
+		match: (m) => m.id.endsWith("gpt-5.5-pro"),
+		map: { off: null, minimal: null, low: null },
+	},
+	// Anthropic Opus 4.6: 'xhigh' effort maps to the upstream 'max' value.
+	{
+		match: (m) => m.id.includes("opus-4-6") || m.id.includes("opus-4.6"),
+		map: { xhigh: "max" },
+	},
+	// Anthropic Opus 4.7 / 4.8: 'xhigh' is a native effort tier.
+	{
+		match: (m) =>
+			m.id.includes("opus-4-7") ||
+			m.id.includes("opus-4.7") ||
+			m.id.includes("opus-4-8") ||
+			m.id.includes("opus-4.8"),
+		map: { xhigh: "xhigh" },
+	},
+	// Groq qwen3-32b collapses to a single 'high' effort (== 'default').
+	{
+		match: (m) => m.provider === "groq" && m.id === "qwen/qwen3-32b",
+		map: { minimal: null, low: null, medium: null, high: "default" },
+	},
+	// OpenAI Codex gpt-5.2/5.3/5.4/5.5: route 'minimal' to 'low'.
+	{
+		match: (m) => m.provider === "openai-codex" && supportsOpenAiXhigh(m.id),
+		map: { minimal: "low" },
+	},
+	// OpenRouter inception/mercury-2: 'off' disabled (Mercury 2 instant mode breaks tool calling).
+	// See openai-completions.ts for the request-shape rationale.
+	{
+		match: (m) => m.provider === "openrouter" && m.id.startsWith("inception/mercury-2"),
+		map: { off: null },
+	},
+	// OpenCode Go Kimi K2.6: only on/off thinking, no distinct effort tiers.
+	{
+		match: (m) => m.provider === "opencode-go" && m.id === "kimi-k2.6",
+		map: { minimal: null, low: null, medium: null },
+	},
+	// OpenCode Zen Grok Build: reasons by default but rejects explicit reasoningEffort.
+	{
+		match: (m) => m.provider === "opencode" && m.id === "grok-build-0.1",
+		map: { off: null, minimal: null, low: null, medium: null },
+	},
+];
+
+interface CustomThinkingLevelRule {
+	/** Predicate that decides if this rule applies to a model. */
+	match: (model: Model<any>) => boolean;
+	/** Per-model custom thinking levels — completely replaces `thinkingLevelMap` for this model. */
+	levels: readonly { label: string; value: string }[];
+}
+
+/**
+ * Declarative table of models whose thinking-level cycle should bypass the
+ * standard `thinkingLevelMap` ladder and use a per-model `{label, value}`
+ * list instead. Each rule replaces `model.customThinkingLevels`; an empty
+ * rule list means "use the standard cycle".
+ */
+const CUSTOM_THINKING_LEVEL_RULES: readonly CustomThinkingLevelRule[] = [
+	// DeepSeek V4 (deepseek / opencode-go providers): native efforts are
+	// 'high' and 'max'. Show those labels verbatim in the TUI and send them
+	// verbatim to the upstream — no pi-level mapping.
+	{
+		match: (m) => DEEPSEEK_V4_PROVIDERS.has(m.provider) && DEEPSEEK_V4_MODEL_IDS.has(m.id),
+		levels: DEEPSEEK_V4_CUSTOM_LEVELS,
+	},
+];
 
 function getTogetherCompat(modelId: string, reasoning: boolean): OpenAICompletionsCompat {
 	if (!reasoning) return TOGETHER_BASE_COMPAT;
@@ -207,68 +337,17 @@ function isGemma4Model(modelId: string): boolean {
 }
 
 function applyThinkingLevelMetadata(model: Model<any>): void {
-	if (
-		(model.api === "openai-responses" || model.api === "azure-openai-responses") &&
-		model.id.startsWith("gpt-5")
-	) {
-		mergeThinkingLevelMap(model, { off: null });
+	for (const rule of THINKING_LEVEL_RULES) {
+		if (rule.match(model)) mergeThinkingLevelMap(model, rule.map);
 	}
-	if (model.provider === "github-copilot" && model.id.startsWith("gpt-5")) {
-		mergeThinkingLevelMap(model, { minimal: "low" });
-	}
-	if (
-		model.api === "openai-responses" &&
-		model.provider === "openai" &&
-		OPENAI_RESPONSES_NONE_REASONING_MODELS.has(model.id)
-	) {
-		mergeThinkingLevelMap(model, { off: "none" });
-	}
-	if (supportsOpenAiXhigh(model.id)) {
-		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
-	}
-	if (model.provider === "openai" && model.id === "gpt-5.5") {
-		mergeThinkingLevelMap(model, { minimal: null });
-	}
-	if (model.id.endsWith("gpt-5.5-pro")) {
-		mergeThinkingLevelMap(model, { off: null, minimal: null, low: null });
-	}
-	if (model.id.includes("opus-4-6") || model.id.includes("opus-4.6")) {
-		mergeThinkingLevelMap(model, { xhigh: "max" });
-	}
-	if (
-		model.id.includes("opus-4-7") ||
-		model.id.includes("opus-4.7") ||
-		model.id.includes("opus-4-8") ||
-		model.id.includes("opus-4.8")
-	) {
-		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
+	for (const rule of CUSTOM_THINKING_LEVEL_RULES) {
+		if (rule.match(model)) model.customThinkingLevels = rule.levels;
 	}
 	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { forceAdaptiveThinking: true });
 	}
 	if (model.api === "anthropic-messages" && isAnthropicTemperatureUnsupportedModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { supportsTemperature: false });
-	}
-	if (model.provider === "groq" && model.id === "qwen/qwen3-32b") {
-		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null, high: "default" });
-	}
-	if (model.provider === "openai-codex" && supportsOpenAiXhigh(model.id)) {
-		mergeThinkingLevelMap(model, { minimal: "low" });
-	}
-	if (model.provider === "openrouter" && model.id.startsWith("inception/mercury-2")) {
-		// Mercury 2 in instant mode (reasoning_effort: "none") disables tool calling.
-		// Mark "off" unsupported so the openai-completions provider omits the reasoning param
-		// instead of defaulting to {reasoning:{effort:"none"}} (see openai-completions.ts:575).
-		// Pi's low/medium/high pass through verbatim; OpenRouter normalizes to Mercury's vocabulary.
-		mergeThinkingLevelMap(model, { off: null });
-	}
-	if (model.provider === "opencode-go" && model.id === "kimi-k2.6") {
-		// OpenCode Go exposes Kimi K2.6 thinking as on/off, not distinct effort tiers.
-		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null });
-	}
-	if (model.provider === "opencode" && model.id === "grok-build-0.1") {
-		// OpenCode Zen Grok Build reasons by default but rejects explicit reasoningEffort.
-		mergeThinkingLevelMap(model, { off: null, minimal: null, low: null, medium: null });
 	}
 }
 
@@ -1363,35 +1442,6 @@ async function generateModels() {
 		},
 	];
 	allModels.push(...deepseekV4Models);
-	// Ark (Volcano Engine Ark / ark.cn) is OpenAI-compatible. models.dev has no
-	// entry, so we hardcode the catalog here. Adjust when models.dev adds Ark.
-	const arkCompat: OpenAICompletionsCompat = {
-		supportsStore: false,
-		supportsDeveloperRole: false,
-		supportsReasoningEffort: false,
-		maxTokensField: "max_tokens",
-		supportsStrictMode: false,
-	};
-	const arkModels: Model<"openai-completions">[] = [
-		{
-			id: "glm-5.1",
-			name: "glm-5.1",
-			api: "openai-completions",
-			baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
-			provider: "ark",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			compat: arkCompat,
-			contextWindow: 200000,
-			maxTokens: 131072,
-		},
-	];
-	for (const model of arkModels) {
-		if (!allModels.some(m => m.provider === "ark" && m.id === model.id)) {
-			allModels.push(model);
-		}
-	}
 
 	for (const candidate of allModels) {
 		if (candidate.api === "openai-completions" && candidate.id.includes("deepseek-v4")) {
@@ -1647,6 +1697,9 @@ export const MODELS = {
 			output += `\t\t\treasoning: ${model.reasoning},\n`;
 			if (model.thinkingLevelMap) {
 				output += `\t\t\tthinkingLevelMap: ${JSON.stringify(model.thinkingLevelMap)},\n`;
+			}
+			if (model.customThinkingLevels) {
+				output += `\t\t\tcustomThinkingLevels: ${JSON.stringify(model.customThinkingLevels)},\n`;
 			}
 			output += `\t\t\tinput: [${model.input.map(i => `"${i}"`).join(", ")}],\n`;
 			output += `\t\t\tcost: {\n`;

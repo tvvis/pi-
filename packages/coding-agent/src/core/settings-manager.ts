@@ -1,5 +1,7 @@
-import type { Transport } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { CustomThinkingLevel, ThinkingLevelMap, Transport } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { minimatch } from "minimatch";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
@@ -78,14 +80,45 @@ export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
 	defaultModel?: string;
-	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	defaultThinkingLevel?: ThinkingLevel;
 	/**
 	 * Per-model thinking level overrides, keyed by `provider/modelId`.
 	 * Takes precedence over `defaultThinkingLevel` when switching to that model.
 	 * When the user changes a model's thinking level via the TUI, the new level
 	 * is written here so subsequent switches back to the same model remember it.
 	 */
-	thinkingLevelsByModel?: Record<string, "off" | "minimal" | "low" | "medium" | "high" | "xhigh">;
+	thinkingLevelsByModel?: Record<string, ThinkingLevel>;
+	/**
+	 * Per-model thinking-level map overrides. Each key is a minimatch pattern
+	 * matched (case-insensitive) against `provider/modelId` and `modelId`
+	 * (so e.g. `"anthropic/claude-*-4-7"` or `"*sonnet*"` both work). Values
+	 * follow the same shape as `Model.thinkingLevelMap`:
+	 *   - `null` to disable a level (e.g. hide it from the TUI cycle),
+	 *   - a string to remap a pi level to a different upstream value,
+	 *   - omitted keys fall back to the built-in map.
+	 *
+	 * Multiple matching entries are merged in insertion order (later wins for
+	 * the same key). Useful for: pointing pi at a proxy that wraps DeepSeek
+	 * with a different effort vocabulary, hiding `xhigh` from a model where
+	 * it is unreliable, or forcing a specific upstream value.
+	 */
+	thinkingLevelMapOverrides?: Record<string, ThinkingLevelMap>;
+	/**
+	 * Per-model `customThinkingLevels` overrides. Each key is a minimatch
+	 * pattern matched (case-insensitive) against `provider/modelId` and
+	 * `modelId` (same convention as `thinkingLevelMapOverrides`). The value
+	 * **fully replaces** the model's built-in `customThinkingLevels`: the TUI
+	 * shows each entry's `label` and the provider sends each entry's `value`
+	 * verbatim. Use this when a model's native effort vocabulary does not map
+	 * onto pi's standard `thinkingLevelMap` (e.g. wrapping DeepSeek behind a
+	 * proxy that only exposes two tiers).
+	 *
+	 * An entry with `label === "off"` is the "no reasoning" option. If no
+	 * entry's label is "off", reasoning is always on for matching models.
+	 * Multiple matching entries are merged in insertion order; later entries
+	 * replace earlier ones with the same `label`.
+	 */
+	customThinkingLevelsOverrides?: Record<string, readonly CustomThinkingLevel[]>;
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
@@ -669,11 +702,11 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined {
+	getDefaultThinkingLevel(): ThinkingLevel | undefined {
 		return this.settings.defaultThinkingLevel;
 	}
 
-	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): void {
+	setDefaultThinkingLevel(level: ThinkingLevel): void {
 		this.globalSettings.defaultThinkingLevel = level;
 		this.markModified("defaultThinkingLevel");
 		this.save();
@@ -683,10 +716,7 @@ export class SettingsManager {
 	 * Get the per-model thinking level override for `provider/modelId`.
 	 * Returns undefined if no override is configured for this model.
 	 */
-	getThinkingLevelForModel(
-		provider: string,
-		modelId: string,
-	): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined {
+	getThinkingLevelForModel(provider: string, modelId: string): ThinkingLevel | undefined {
 		const key = `${provider}/${modelId}`;
 		return this.settings.thinkingLevelsByModel?.[key];
 	}
@@ -695,11 +725,7 @@ export class SettingsManager {
 	 * Persist a per-model thinking level override. Subsequent switches to this
 	 * model will use this level instead of the global `defaultThinkingLevel`.
 	 */
-	setThinkingLevelForModel(
-		provider: string,
-		modelId: string,
-		level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh",
-	): void {
+	setThinkingLevelForModel(provider: string, modelId: string, level: ThinkingLevel): void {
 		const key = `${provider}/${modelId}`;
 		const existing = this.globalSettings.thinkingLevelsByModel ?? {};
 		if (existing[key] === level) return;
@@ -721,6 +747,58 @@ export class SettingsManager {
 		this.globalSettings.thinkingLevelsByModel = Object.keys(next).length > 0 ? next : undefined;
 		this.markModified("thinkingLevelsByModel");
 		this.save();
+	}
+
+	/**
+	 * Resolve and merge all `thinkingLevelMapOverrides` entries whose pattern
+	 * matches `provider/modelId` (or just `modelId`). Insertion order wins for
+	 * the same key. Returns an empty object when nothing matches.
+	 *
+	 * Used by `agent-session` to wrap the bound model so the TUI cycle and the
+	 * provider request both see the merged map.
+	 */
+	getThinkingLevelMapOverridesForModel(provider: string, modelId: string): ThinkingLevelMap {
+		const overrides = this.settings.thinkingLevelMapOverrides;
+		if (!overrides) return {};
+		const fullId = `${provider}/${modelId}`;
+		const merged: ThinkingLevelMap = {};
+		for (const [pattern, map] of Object.entries(overrides)) {
+			if (!minimatch(fullId, pattern, { nocase: true }) && !minimatch(modelId, pattern, { nocase: true })) continue;
+			Object.assign(merged, map);
+		}
+		return merged;
+	}
+
+	/**
+	 * Resolve and merge all `customThinkingLevelsOverrides` entries whose
+	 * pattern matches `provider/modelId` (or just `modelId`). When multiple
+	 * patterns match, their entries are concatenated in insertion order; if
+	 * two entries share the same `label`, the later one wins. Returns
+	 * `undefined` when nothing matches (caller can use it as "no override").
+	 *
+	 * The result is meant to be passed to `withCustomThinkingLevelsOverrides`
+	 * to fully replace the model's built-in `customThinkingLevels` cycle.
+	 */
+	getCustomThinkingLevelsOverridesForModel(
+		provider: string,
+		modelId: string,
+	): readonly CustomThinkingLevel[] | undefined {
+		const overrides = this.settings.customThinkingLevelsOverrides;
+		if (!overrides) return undefined;
+		const fullId = `${provider}/${modelId}`;
+		const merged: CustomThinkingLevel[] = [];
+		for (const [pattern, levels] of Object.entries(overrides)) {
+			if (!minimatch(fullId, pattern, { nocase: true }) && !minimatch(modelId, pattern, { nocase: true })) continue;
+			for (const entry of levels) {
+				const existingIdx = merged.findIndex((e) => e.label === entry.label);
+				if (existingIdx >= 0) {
+					merged[existingIdx] = entry;
+				} else {
+					merged.push(entry);
+				}
+			}
+		}
+		return merged.length > 0 ? merged : undefined;
 	}
 
 	getTransport(): TransportSetting {

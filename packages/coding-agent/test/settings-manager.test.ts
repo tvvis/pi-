@@ -281,6 +281,149 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("thinkingLevelMapOverrides", () => {
+		it("returns empty when no overrides configured", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getThinkingLevelMapOverridesForModel("deepseek", "deepseek-v4-flash")).toEqual({});
+		});
+
+		it("matches by exact provider/modelId", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					thinkingLevelMapOverrides: {
+						"deepseek/deepseek-v4-flash": { minimal: null, low: null, medium: null, xhigh: "max" },
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getThinkingLevelMapOverridesForModel("deepseek", "deepseek-v4-flash")).toEqual({
+				minimal: null,
+				low: null,
+				medium: null,
+				xhigh: "max",
+			});
+			// Different model — same provider — no match.
+			expect(manager.getThinkingLevelMapOverridesForModel("deepseek", "deepseek-v4-pro")).toEqual({});
+			// Same model id, different provider — no match.
+			expect(manager.getThinkingLevelMapOverridesForModel("opencode-go", "deepseek-v4-flash")).toEqual({});
+		});
+
+		it("matches against bare modelId via glob", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					thinkingLevelMapOverrides: {
+						"*sonnet*": { xhigh: null },
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getThinkingLevelMapOverridesForModel("anthropic", "claude-sonnet-4-5")).toEqual({
+				xhigh: null,
+			});
+			expect(manager.getThinkingLevelMapOverridesForModel("github-copilot", "claude-sonnet-4.5")).toEqual({
+				xhigh: null,
+			});
+			expect(manager.getThinkingLevelMapOverridesForModel("anthropic", "claude-opus-4-7")).toEqual({});
+		});
+
+		it("merges multiple matching patterns in insertion order (later wins)", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					thinkingLevelMapOverrides: {
+						"anthropic/*": { high: "A", xhigh: "X" },
+						"*opus*": { high: "B" },
+						"anthropic/claude-opus-4-7": { high: "C" },
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			// opus-4-7 matches all three — last write wins for the same key.
+			expect(manager.getThinkingLevelMapOverridesForModel("anthropic", "claude-opus-4-7")).toEqual({
+				high: "C",
+				xhigh: "X",
+			});
+			// opus-4-6 matches first two.
+			expect(manager.getThinkingLevelMapOverridesForModel("anthropic", "claude-opus-4-6")).toEqual({
+				high: "B",
+				xhigh: "X",
+			});
+			// sonnet matches only the first.
+			expect(manager.getThinkingLevelMapOverridesForModel("anthropic", "claude-sonnet-4-5")).toEqual({
+				high: "A",
+				xhigh: "X",
+			});
+		});
+	});
+
+	describe("customThinkingLevelsOverrides", () => {
+		it("returns undefined when no overrides configured", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getCustomThinkingLevelsOverridesForModel("deepseek", "deepseek-v4-flash")).toBeUndefined();
+		});
+
+		it("matches by exact provider/modelId and returns the override cycle verbatim", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					customThinkingLevelsOverrides: {
+						"deepseek/deepseek-v4-flash": [
+							{ label: "high", value: "high" },
+							{ label: "max", value: "max" },
+						],
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getCustomThinkingLevelsOverridesForModel("deepseek", "deepseek-v4-flash")).toEqual([
+				{ label: "high", value: "high" },
+				{ label: "max", value: "max" },
+			]);
+			// Different model — no match.
+			expect(manager.getCustomThinkingLevelsOverridesForModel("deepseek", "deepseek-v4-pro")).toBeUndefined();
+		});
+
+		it("merges multiple matching patterns; later entries replace same-label ones", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					customThinkingLevelsOverrides: {
+						"anthropic/*": [
+							{ label: "off", value: "off" },
+							{ label: "high", value: "high" },
+						],
+						"*opus*": [{ label: "high", value: "max-effort" }],
+						"anthropic/claude-opus-4-7": [{ label: "ultra", value: "ultra" }],
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			// opus-4-7 matches all three. Later patterns override same-label entries.
+			expect(manager.getCustomThinkingLevelsOverridesForModel("anthropic", "claude-opus-4-7")).toEqual([
+				{ label: "off", value: "off" },
+				{ label: "high", value: "max-effort" },
+				{ label: "ultra", value: "ultra" },
+			]);
+			// opus-4-6 matches first two.
+			expect(manager.getCustomThinkingLevelsOverridesForModel("anthropic", "claude-opus-4-6")).toEqual([
+				{ label: "off", value: "off" },
+				{ label: "high", value: "max-effort" },
+			]);
+			// sonnet matches only the first.
+			expect(manager.getCustomThinkingLevelsOverridesForModel("anthropic", "claude-sonnet-4-5")).toEqual([
+				{ label: "off", value: "off" },
+				{ label: "high", value: "high" },
+			]);
+		});
+	});
+
 	describe("shellCommandPrefix", () => {
 		it("should load shellCommandPrefix from settings", () => {
 			const settingsPath = join(agentDir, "settings.json");

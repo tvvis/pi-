@@ -9,7 +9,6 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 	groq: "Groq",
 	huggingface: "Hugging Face",
 	"kimi-coding": "Kimi For Coding",
-	ark: "Ark",
 	minimax: "MiniMax",
 	"minimax-cn": "MiniMax (China)",
 	moonshotai: "Moonshot AI",

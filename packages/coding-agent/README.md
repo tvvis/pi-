@@ -131,7 +131,6 @@ For each built-in provider, pi maintains a list of tool-capable models, updated 
 - Fireworks
 - Together AI
 - Kimi For Coding
-- Ark
 - MiniMax
 - Xiaomi MiMo
 - Xiaomi MiMo Token Plan (China)

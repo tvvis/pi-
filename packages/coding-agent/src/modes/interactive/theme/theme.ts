@@ -108,6 +108,7 @@ export type ThemeColor =
 	| "border"
 	| "borderAccent"
 	| "borderMuted"
+	| "white"
 	| "success"
 	| "error"
 	| "warning"
@@ -395,7 +396,9 @@ export class Theme {
 		return this.mode;
 	}
 
-	getThinkingBorderColor(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): (str: string) => string {
+	getThinkingBorderColor(
+		level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | (string & {}),
+	): (str: string) => string {
 		// Map thinking levels to dedicated theme colors
 		switch (level) {
 			case "off":
@@ -411,7 +414,8 @@ export class Theme {
 			case "xhigh":
 				return (str: string) => this.fg("thinkingXhigh", str);
 			default:
-				return (str: string) => this.fg("thinkingOff", str);
+				// Custom level (e.g. DeepSeek V4's "max") — fall back to the high-effort color.
+				return (str: string) => this.fg("thinkingHigh", str);
 		}
 	}
 

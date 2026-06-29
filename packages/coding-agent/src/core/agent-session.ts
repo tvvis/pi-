@@ -23,7 +23,14 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	ImageContent,
+	Message,
+	Model,
+	ModelThinkingLevel,
+	TextContent,
+} from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -32,6 +39,8 @@ import {
 	modelsAreEqual,
 	resetApiProviders,
 	streamSimple,
+	withCustomThinkingLevelsOverrides,
+	withThinkingLevelOverrides,
 } from "@earendil-works/pi-ai";
 import { getDraftRoot, getPlanModeState } from "../modes/interactive/plan-mode-state.ts";
 import { theme } from "../modes/interactive/theme/theme.ts";
@@ -136,7 +145,7 @@ export type AgentSessionEvent =
 	  }
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
 	| { type: "session_info_changed"; name: string | undefined }
-	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "thinking_level_changed"; level: ModelThinkingLevel }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -161,7 +170,7 @@ export interface AgentSessionConfig {
 	settingsManager: SettingsManager;
 	cwd: string;
 	/** Models to cycle through with Ctrl+P (from --models flag) */
-	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
+	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ModelThinkingLevel }>;
 	/** Resource loader for skills, prompts, themes, context files, system prompt */
 	resourceLoader: ResourceLoader;
 	/** SDK custom tools registered outside extensions */
@@ -213,7 +222,7 @@ export interface PromptOptions {
 /** Result from cycleModel() */
 export interface ModelCycleResult {
 	model: Model<any>;
-	thinkingLevel: ThinkingLevel;
+	thinkingLevel: ModelThinkingLevel;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
 }
@@ -247,8 +256,8 @@ interface ToolDefinitionEntry {
 // Constants
 // ============================================================================
 
-/** Standard thinking levels */
-const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+/** Standard thinking levels (used as a fallback when no model is bound). */
+const THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
 // ============================================================================
 // AgentSession Class
@@ -259,7 +268,7 @@ export class AgentSession {
 	readonly sessionManager: SessionManager;
 	readonly settingsManager: SettingsManager;
 
-	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
+	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ModelThinkingLevel }>;
 
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
@@ -749,7 +758,7 @@ export class AgentSession {
 	}
 
 	/** Current thinking level */
-	get thinkingLevel(): ThinkingLevel {
+	get thinkingLevel(): ModelThinkingLevel {
 		return this.agent.state.thinkingLevel;
 	}
 
@@ -865,12 +874,12 @@ export class AgentSession {
 	}
 
 	/** Scoped models for cycling (from --models flag) */
-	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
+	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel?: ModelThinkingLevel }> {
 		return this._scopedModels;
 	}
 
 	/** Update scoped models for cycling */
-	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>): void {
+	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel?: ModelThinkingLevel }>): void {
 		this._scopedModels = scopedModels;
 	}
 
@@ -1476,7 +1485,7 @@ export class AgentSession {
 
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
-		this.agent.state.model = model;
+		this.agent.state.model = this._applyThinkingLevelOverrides(model);
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
@@ -1516,7 +1525,7 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
 
 		// Apply model
-		this.agent.state.model = next.model;
+		this.agent.state.model = this._applyThinkingLevelOverrides(next.model);
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
 		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 
@@ -1547,7 +1556,7 @@ export class AgentSession {
 		const nextModel = availableModels[nextIndex];
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
-		this.agent.state.model = nextModel;
+		this.agent.state.model = this._applyThinkingLevelOverrides(nextModel);
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
@@ -1571,7 +1580,7 @@ export class AgentSession {
 	 * Clamps to model capabilities based on available thinking levels.
 	 * Saves to session and settings only if the level actually changes.
 	 */
-	setThinkingLevel(level: ThinkingLevel): void {
+	setThinkingLevel(level: ModelThinkingLevel): void {
 		const availableLevels = this.getAvailableThinkingLevels();
 		const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
@@ -1615,12 +1624,13 @@ export class AgentSession {
 	}
 
 	/**
-	 * Get available thinking levels for current model.
-	 * The provider will clamp to what the specific model supports internally.
+	 * Get available thinking levels for current model. The TUI shows these
+	 * labels verbatim (custom-level models use their per-model labels; standard
+	 * models use pi-level keys).
 	 */
-	getAvailableThinkingLevels(): ThinkingLevel[] {
+	getAvailableThinkingLevels(): ModelThinkingLevel[] {
 		if (!this.model) return THINKING_LEVELS;
-		return getSupportedThinkingLevels(this.model) as ThinkingLevel[];
+		return getSupportedThinkingLevels(this.model) as ModelThinkingLevel[];
 	}
 
 	/**
@@ -1648,8 +1658,28 @@ export class AgentSession {
 		return this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
 	}
 
-	private _clampThinkingLevel(level: ThinkingLevel, _availableLevels: ThinkingLevel[]): ThinkingLevel {
-		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
+	private _clampThinkingLevel(level: ModelThinkingLevel, _availableLevels: ModelThinkingLevel[]): ModelThinkingLevel {
+		return this.model ? (clampThinkingLevel(this.model, level) as ModelThinkingLevel) : "off";
+	}
+
+	/**
+	 * Wrap `model` with the user's per-model thinking-level overrides
+	 * (resolved via `SettingsManager`). Two layers are applied in order:
+	 * 1. `customThinkingLevelsOverrides` \u2014 fully replaces the model's cycle
+	 *    (TUI shows labels, provider sends values verbatim).
+	 * 2. `thinkingLevelMapOverrides` \u2014 shallow-merges into the resulting
+	 *    `thinkingLevelMap` (only takes effect when no custom levels were
+	 *    applied; useful for tweaking the standard cycle).
+	 * Called at every model-assignment site so the TUI cycle, clamp, and
+	 * provider request all see the merged result. Returns `model` unchanged
+	 * when no overrides match.
+	 */
+	private _applyThinkingLevelOverrides(model: Model<any>): Model<any> {
+		const customLevels = this.settingsManager.getCustomThinkingLevelsOverridesForModel(model.provider, model.id);
+		let next = customLevels ? withCustomThinkingLevelsOverrides(model, customLevels) : model;
+		const mapOverrides = this.settingsManager.getThinkingLevelMapOverridesForModel(model.provider, model.id);
+		if (Object.keys(mapOverrides).length > 0) next = withThinkingLevelOverrides(next, mapOverrides);
+		return next;
 	}
 
 	// =========================================================================
@@ -2211,7 +2241,7 @@ export class AgentSession {
 			return;
 		}
 
-		this.agent.state.model = refreshedModel;
+		this.agent.state.model = this._applyThinkingLevelOverrides(refreshedModel);
 	}
 
 	private _bindExtensionCore(runner: ExtensionRunner): void {

@@ -48,6 +48,7 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
  */
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
+	private planModeActive = false;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
 
@@ -62,6 +63,11 @@ export class FooterComponent implements Component {
 
 	setAutoCompactEnabled(enabled: boolean): void {
 		this.autoCompactEnabled = enabled;
+	}
+
+	setPlanModeActive(active: boolean): void {
+		if (this.planModeActive === active) return;
+		this.planModeActive = active;
 	}
 
 	/**
@@ -233,11 +239,18 @@ export class FooterComponent implements Component {
 
 		// Add extension statuses on a single line, sorted by key alphabetically
 		const extensionStatuses = this.footerData.getExtensionStatuses();
+		const statusSegments: string[] = [];
+		if (this.planModeActive) {
+			statusSegments.push(theme.fg("accent", "◧ plan"));
+		}
 		if (extensionStatuses.size > 0) {
 			const sortedStatuses = Array.from(extensionStatuses.entries())
 				.sort(([a], [b]) => a.localeCompare(b))
 				.map(([, text]) => sanitizeStatusText(text));
-			const statusLine = sortedStatuses.join(" ");
+			statusSegments.push(...sortedStatuses);
+		}
+		if (statusSegments.length > 0) {
+			const statusLine = statusSegments.join(" ");
 			// Truncate to terminal width with dim ellipsis for consistency with footer style
 			lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
 		}

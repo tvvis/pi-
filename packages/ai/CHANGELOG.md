@@ -2,10 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `Model.customThinkingLevels?: readonly { label: string; value: string }[]`. When set on a model, this completely replaces the standard `thinkingLevelMap` cycle: the TUI shows each entry's `label` verbatim and the provider sends each entry's `value` verbatim — no pi-level indirection. Used by DeepSeek V4 to expose its native `high` / `max` efforts.
+- Added `withThinkingLevelOverrides(model, overrides)` helper to merge a per-model thinking-level override map at runtime. Consumed by `coding-agent` to apply `thinkingLevelMapOverrides` from `settings.json` so the TUI cycle, clamp, and provider request all see the merged map.
+
+### Changed
+
+- Refactored generated-model thinking-level overrides from imperative `if` blocks into a single declarative `THINKING_LEVEL_RULES` table, and deduplicated the per-provider `reasoningEffort?` option types to share `ModelThinkingLevel` from `types.ts`.
+- Widened `ModelThinkingLevel` to `ThinkingLevel | (string & {})` so models with `customThinkingLevels` can carry arbitrary labels through `StreamOptions.reasoning`, `AgentState.thinkingLevel`, and provider `reasoningEffort` without unsafe casts. The strict pi enum remains under `ThinkingLevel` for callers that want to constrain to canonical values.
+
 ### Fixed
 
 - Fixed Amazon Bedrock requests to replace blank required user/tool-result text with a placeholder and skip blank replay text blocks ([#4975](https://github.com/earendil-works/pi/issues/4975)).
 - Fixed OpenAI GPT-5.5 generated metadata to omit unsupported minimal thinking ([#5243](https://github.com/earendil-works/pi/issues/5243)).
+- Fixed DeepSeek V4 (deepseek and opencode-go providers) thinking-level metadata so the TUI only exposes the native `high` / `max` efforts verbatim instead of routing them through pi-level indirection.
 
 ## [0.78.0] - 2026-05-29
 

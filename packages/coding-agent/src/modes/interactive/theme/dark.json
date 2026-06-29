@@ -4,6 +4,7 @@
 	"vars": {
 		"cyan": "#00d7ff",
 		"blue": "#5f87ff",
+		"white": "#ffffff",
 		"green": "#b5bd68",
 		"red": "#cc6666",
 		"yellow": "#ffff00",
@@ -23,6 +24,7 @@
 		"accent": "accent",
 		"border": "blue",
 		"borderAccent": "cyan",
+		"white": "white",
 		"borderMuted": "darkGray",
 		"success": "green",
 		"error": "red",

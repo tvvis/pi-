@@ -4,6 +4,12 @@ import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
+import {
+	getDraftRoot,
+	isInPlanMode,
+	isPathAllowedInPlanMode,
+	PlanModeWriteError,
+} from "../../modes/interactive/plan-mode-state.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import {
@@ -308,6 +314,9 @@ export function createEditToolDefinition(
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
 			const { path, edits } = validateEditInput(input);
 			const absolutePath = resolveToCwd(path, cwd);
+			if (isInPlanMode() && !isPathAllowedInPlanMode(absolutePath)) {
+				throw new PlanModeWriteError(absolutePath, getDraftRoot() ?? "(unknown)");
+			}
 
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the

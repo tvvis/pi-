@@ -4,6 +4,12 @@ import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import {
+	getDraftRoot,
+	isInPlanMode,
+	isPathAllowedInPlanMode,
+	PlanModeWriteError,
+} from "../../modes/interactive/plan-mode-state.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
@@ -199,6 +205,9 @@ export function createWriteToolDefinition(
 			_ctx?,
 		) {
 			const absolutePath = resolveToCwd(path, cwd);
+			if (isInPlanMode() && !isPathAllowedInPlanMode(absolutePath)) {
+				throw new PlanModeWriteError(absolutePath, getDraftRoot() ?? "(unknown)");
+			}
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the

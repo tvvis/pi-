@@ -25,6 +25,16 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/**
+	 * Plan mode context. When present, the system prompt is augmented
+	 * with a "Plan Mode" section that lays out the restrictions and
+	 * workflow. The model uses this to know it cannot modify project
+	 * files and must call `plan({ready: true})` to request confirmation.
+	 */
+	planMode?: {
+		draftRoot: string;
+		description?: string;
+	};
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -38,6 +48,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		planMode,
 	} = options;
 	const resolvedCwd = cwd;
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -171,6 +182,24 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 	// Add date and working directory last
 	prompt += `\nCurrent date: ${date}`;
 	prompt += `\nCurrent working directory: ${promptCwd}`;
+
+	if (planMode) {
+		prompt += `\n\n## Plan Mode\n\nYou are in plan mode. You must NOT modify any project files.\n\n`;
+		prompt += `Available tools:\n`;
+		prompt += `- read, grep, find, ls: read project files\n`;
+		prompt += `- ask: ask the user structured questions\n`;
+		prompt += `- write, edit: ONLY to \`${planMode.draftRoot}/*\` (other paths throw PlanModeWriteError)\n`;
+		prompt += `- bash: disabled\n`;
+		prompt += `- plan: call with \`ready=true\` to request user confirmation\n\n`;
+		prompt += `Workflow:\n`;
+		prompt += `1. Discuss with the user (conversationally or via the \`ask\` tool)\n`;
+		prompt += `2. Write your evolving plan to \`${planMode.draftRoot}/current.md\` using \`write\` or \`edit\`\n`;
+		prompt += `3. When the plan is complete and you are ready for the user to confirm, call \`plan({ready: true})\`\n`;
+		prompt += `4. Wait for the user to choose: execute / refine / new session\n\n`;
+		if (planMode.description) {
+			prompt += `The user is planning: ${planMode.description}\n`;
+		}
+	}
 
 	return prompt;
 }

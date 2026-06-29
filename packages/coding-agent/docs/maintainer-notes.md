@@ -75,3 +75,143 @@ Tests:
 
 - `packages/coding-agent/test/suite/regressions/3217-scoped-model-order.test.ts`
   — still passes; only covers the component, not the slash command.
+
+## `write` tool: skip-unchanged optimization
+
+**Status**: Proposed
+**Date**: 2026-06-16
+
+### Problem
+
+When the agent calls `write` with content identical to the existing file, it silently overwrites — no diff, no feedback. In practice this causes the same file to be written **10+ times** in a single session (observed with `config_common.conf` during `multi_branch_c` test-plan creation). The agent has no signal that the write was redundant, so it keeps re-issuing it across multiple reasoning turns.
+
+### Proposal
+
+Before writing, compare `content` against the existing file:
+
+| Situation | Action | Return string |
+|-----------|--------|---------------|
+| File does not exist | Write normally | `Created: {path}` |
+| Content differs | Overwrite | `Overwritten: {path}` |
+| Content is identical | Skip (no I/O) | `Unchanged: {path} (skipped)` |
+
+### Why this works
+
+- **Tool-level fix** — no skill prompt changes needed; the agent sees `Unchanged (skipped)` and stops retrying.
+- **Preserves semantics** — when content genuinely differs, `write` still overwrites as before.
+- **Cheap** — one `fs.readFile` + string compare before the write; negligible cost vs. a full overwrite.
+- **Self-correcting** — even if the agent's reasoning is buggy (re-dispatching writes it already did), the tool catches it.
+
+### Alternatives considered
+
+| Alternative | Why rejected |
+|------------|-------------|
+| `skip_if_exists` parameter | Too aggressive — would block legitimate overwrites with different content |
+| Skill-level rule ("check before writing") | Unreliable — agent behavior can't be guaranteed by prompt alone |
+| Return diff on overwrite | Nice-to-have but orthogonal; the key fix is the `Unchanged` signal |
+
+### Implementation sketch
+
+In the `write` tool handler (wherever `fs.writeFile` is called):
+
+```ts
+const existing = await fs.readFile(path, 'utf8').catch(() => null);
+if (existing !== null && existing === content) {
+  return { status: 'Unchanged', path, detail: 'skipped' };
+}
+await fs.mkdir(dirname(path), { recursive: true });
+await fs.writeFile(path, content);
+return { status: existing === null ? 'Created' : 'Overwritten', path };
+```
+
+### Open question
+
+- Should `edit` tool also get a similar guard? (If `oldText` matches but `newText` equals the current text at that location, it's a no-op edit.)
+
+## write tool: skip-unchanged optimization
+
+### Problem
+
+Agent sometimes writes the same file multiple times in one session (e.g. `configs/B/config_common.conf` was written 10+ times when creating a test_plan scene). Each write is a no-op in terms of content but:
+- Wastes tool call budget
+- Makes the conversation log noisy and hard to audit
+- Gives the agent no signal that the file already had that content
+
+### Root cause
+
+The `write` tool unconditionally overwrites and always returns the same result regardless of whether the file changed. The agent cannot distinguish "I just created this" from "I just overwrote with identical content".
+
+### Proposed change
+
+Before writing, read the existing file (if any) and compare content:
+
+| Case | Behavior | Return value |
+|------|----------|-------------|
+| File does not exist | Write normally | `Created: {path}` |
+| Content differs | Overwrite normally | `Overwritten: {path}` |
+| Content identical | Skip write | `Unchanged: {path} (skipped)` |
+
+### Why not other approaches
+
+- **`skip_if_exists` flag**: breaks the legitimate "overwrite with new content" use case
+- **Skill-level rules** ("check before writing"): unreliable — agent behavior is non-deterministic; tool-level enforcement is the correct layer
+- **Batch write requirement**: over-constrains valid workflows where incremental writes are intentional
+
+### Implementation notes
+
+- Content comparison should be exact string match (no normalization)
+- The `skipped` signal in the return value is the key feature — it lets the agent learn and stop retrying
+- No new parameters needed; fully backward compatible
+- Consider: should `edit` tool also get a similar check? (lower priority since `edit` requires matching `oldText` which already implies content awareness)
+
+## `write` tool: skip unchanged overwrites
+
+**Status**: Proposed
+**Date**: 2026-06-16
+
+### Problem
+
+When the agent calls `write` with content identical to the existing file, it silently overwrites — no diff, no feedback. In practice this causes the same file to be written **10+ times** in a single session (observed with `config_common.conf` during `multi_branch_c` test-plan creation). The agent has no signal that the write was redundant, so it keeps re-issuing it across multiple reasoning turns.
+
+### Proposal
+
+Before writing, compare `content` against the existing file:
+
+| Situation | Action | Return string |
+|-----------|--------|---------------|
+| File does not exist | Write normally | `Created: {path}` |
+| Content differs | Overwrite | `Overwritten: {path}` |
+| Content is identical | Skip (no I/O) | `Unchanged: {path} (skipped)` |
+
+### Why this works
+
+- **Tool-level fix** — no skill prompt changes needed; the agent sees `Unchanged (skipped)` and stops retrying.
+- **Preserves semantics** — when content genuinely differs, `write` still overwrites as before.
+- **Cheap** — one `fs.readFile` + string compare before the write; negligible cost vs. a full overwrite.
+- **Self-correcting** — even if the agent's reasoning is buggy (re-dispatching writes it already did), the tool catches it.
+
+### Alternatives considered
+
+| Alternative | Why rejected |
+|------------|-------------|
+| `skip_if_exists` parameter | Too aggressive — would block legitimate overwrites with different content |
+| Skill-level rule ("check before writing") | Unreliable — agent behavior can't be guaranteed by prompt alone |
+| Return diff on overwrite | Nice-to-have but orthogonal; the key fix is the `Unchanged` signal |
+
+### Implementation sketch
+
+In the `write` tool handler (wherever `fs.writeFile` is called):
+
+```ts
+const existing = await fs.readFile(path, 'utf8').catch(() => null);
+if (existing !== null && existing === content) {
+  return { status: 'Unchanged', path, detail: 'skipped' };
+}
+await fs.mkdir(dirname(path), { recursive: true });
+await fs.writeFile(path, content);
+return { status: existing === null ? 'Created' : 'Overwritten', path };
+```
+
+### Open question
+
+- Should `edit` tool also get a similar guard? (If `oldText` matches but `newText` equals the current text at that location, it's a no-op edit.)

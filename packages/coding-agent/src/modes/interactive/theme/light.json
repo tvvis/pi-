@@ -4,6 +4,7 @@
 	"vars": {
 		"teal": "#5a8080",
 		"blue": "#547da7",
+		"white": "#ffffff",
 		"green": "#588458",
 		"red": "#aa5555",
 		"yellow": "#9a7326",
@@ -22,6 +23,7 @@
 		"accent": "teal",
 		"border": "blue",
 		"borderAccent": "teal",
+		"white": "white",
 		"borderMuted": "lightGray",
 		"success": "green",
 		"error": "red",

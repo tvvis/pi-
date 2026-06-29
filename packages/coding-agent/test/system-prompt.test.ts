@@ -220,3 +220,51 @@ describe("resolveModelAppendSystemPrompts", () => {
 		}
 	});
 });
+
+describe("buildSystemPrompt plan mode", () => {
+	test("does not include the Plan Mode section by default", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+		});
+		expect(prompt).not.toContain("## Plan Mode");
+	});
+
+	test("includes the Plan Mode section when planMode is set", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			planMode: { draftRoot: "/home/user/.pi/draft/abc123" },
+		});
+		expect(prompt).toContain("## Plan Mode");
+		expect(prompt).toContain("/home/user/.pi/draft/abc123/*");
+		expect(prompt).toContain("PlanModeWriteError");
+		expect(prompt).toContain("plan({ready: true})");
+	});
+
+	test("includes the description when provided", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			planMode: { draftRoot: "/tmp/draft", description: "add rate limiting" },
+		});
+		expect(prompt).toContain("The user is planning: add rate limiting");
+	});
+
+	test("omits the description line when not provided", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			planMode: { draftRoot: "/tmp/draft" },
+		});
+		expect(prompt).not.toContain("The user is planning:");
+	});
+});

@@ -71,11 +71,11 @@ export const TUI_KEYBINDINGS = {
 		description: "Move cursor word right",
 	},
 	"tui.editor.cursorLineStart": {
-		defaultKeys: ["home", "ctrl+a"],
+		defaultKeys: ["ctrl+a", "home"],
 		description: "Move to line start",
 	},
 	"tui.editor.cursorLineEnd": {
-		defaultKeys: ["end", "ctrl+e"],
+		defaultKeys: ["ctrl+e", "end"],
 		description: "Move to line end",
 	},
 	"tui.editor.jumpForward": {
@@ -86,8 +86,8 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: "ctrl+alt+]",
 		description: "Jump backward to character",
 	},
-	"tui.editor.pageUp": { defaultKeys: "pageUp", description: "Page up" },
-	"tui.editor.pageDown": { defaultKeys: "pageDown", description: "Page down" },
+	"tui.editor.pageUp": { defaultKeys: [], description: "Page up (unused, mapped at app level)" },
+	"tui.editor.pageDown": { defaultKeys: [], description: "Page down (unused, mapped at app level)" },
 	"tui.editor.deleteCharBackward": {
 		defaultKeys: "backspace",
 		description: "Delete character backward",

@@ -27,6 +27,7 @@ import type {
 	AssistantMessage,
 	Context,
 	Model,
+	ModelThinkingLevel,
 	SimpleStreamOptions,
 	StreamFunction,
 	StreamOptions,
@@ -71,8 +72,11 @@ const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
 // Types
 // ============================================================================
 
+/** Codex accepts the upstream 'none' sentinel in addition to standard pi thinking levels and per-model custom labels. */
+export type CodexReasoningEffort = ModelThinkingLevel | "none";
+
 export interface OpenAICodexResponsesOptions extends StreamOptions {
-	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	reasoningEffort?: CodexReasoningEffort;
 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	textVerbosity?: "low" | "medium" | "high";

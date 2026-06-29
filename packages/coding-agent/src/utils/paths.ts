@@ -4,6 +4,32 @@ import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { spawnProcessSync } from "./child-process.ts";
 
+/**
+ * Returns true if running inside Windows Subsystem for Linux.
+ */
+export function isWslEnvironment(): boolean {
+	return process.platform === "linux" && !!(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+}
+
+/**
+ * Convert a Linux path to a Windows path using `wslpath -w`.
+ * Returns the original path if conversion fails or not in WSL.
+ */
+export function toWindowsPath(linuxPath: string): string {
+	try {
+		const result = spawnProcessSync("wslpath", ["-w", linuxPath], {
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+			timeout: 5000,
+		});
+		const winPath = result.stdout.trim();
+		if (winPath && result.status === 0) return winPath;
+	} catch {
+		// Fall through to return original path
+	}
+	return linuxPath;
+}
+
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 export interface PathInputOptions {

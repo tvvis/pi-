@@ -32,6 +32,8 @@ export class VirtualTerminal implements Terminal {
 	start(onInput: (data: string) => void, onResize: () => void): void {
 		this.inputHandler = onInput;
 		this.resizeHandler = onResize;
+		// Enter the alternate screen buffer for consistency with ProcessTerminal
+		this.xterm.write("\x1b[?1049h");
 		// Enable bracketed paste mode for consistency with ProcessTerminal
 		this.xterm.write("\x1b[?2004h");
 	}
@@ -43,6 +45,8 @@ export class VirtualTerminal implements Terminal {
 	stop(): void {
 		// Disable bracketed paste mode
 		this.xterm.write("\x1b[?2004l");
+		// Leave the alternate screen buffer
+		this.xterm.write("\x1b[?1049l");
 		this.inputHandler = undefined;
 		this.resizeHandler = undefined;
 	}
@@ -81,6 +85,14 @@ export class VirtualTerminal implements Terminal {
 
 	showCursor(): void {
 		this.xterm.write("\x1b[?25h");
+	}
+
+	enterAltScreen(): void {
+		this.xterm.write("\x1b[?1049h");
+	}
+
+	exitAltScreen(): void {
+		this.xterm.write("\x1b[?1049l");
 	}
 
 	clearLine(): void {

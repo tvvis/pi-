@@ -1,12 +1,12 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import { ansibleExec, ansibleUpload, type ExecResult } from "./ansible.ts";
-import { highlightLine } from "./highlight.ts";
+import { highlightLine, highlightShell } from "./highlight.ts";
 
 // ---------------------------------------------------------------------------
 // MD5 helpers — used by file_upload to verify integrity end-to-end so the
@@ -80,6 +80,22 @@ interface RunScriptDetails {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function toolDivider(theme: Theme): Component {
+  return {
+    render(width: number): string[] {
+      return [theme.fg("borderMuted", "─".repeat(Math.max(0, width)))];
+    },
+    invalidate(): void {},
+  };
+}
+
+function withTopDivider(content: Component, theme: Theme): Component {
+  const container = new Container();
+  container.addChild(toolDivider(theme));
+  container.addChild(content);
+  return container;
+}
 
 function formatError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
@@ -289,9 +305,9 @@ export default function (pi: ExtensionAPI) {
     name: "run_script",
     label: "Run Script",
     description:
-      "Execute a bash script or inline command on a remote Ansible host and run # @assert: assertions. Use path for existing script files (uploads and executes remotely), or command for inline commands (executes directly, no upload).",
+      "Execute a bash script or inline command on a remote host and run # @assert: assertions. Use path for existing script files (uploads and executes remotely), or command for inline commands (executes directly, no upload).",
     promptSnippet:
-      "Upload and execute a bash script or inline command on a remote Ansible host with assertion-based validation",
+      "Upload and execute a bash script or inline command on a remote host with assertion-based validation",
     promptGuidelines: [
       "For the full workflow, host selection rules, and assertion patterns, load the `script-validator` skill.",
       "Use `path` for any multi-step work: write the script to a local file first, then call run_script with path. Do not embed scripts in inline commands via heredoc (`cat > x.sh <<EOF` / `tee` / `base64 -d | bash`) — the upload path is the only supported way to run a non-trivial script.",
@@ -300,7 +316,7 @@ export default function (pi: ExtensionAPI) {
     renderShell: "self",
     parameters: Type.Object({
       host: Type.String({
-        description: "Ansible agent host",
+        description: "Remote host",
       }),
       path: Type.Optional(
         Type.String({
@@ -367,25 +383,63 @@ export default function (pi: ExtensionAPI) {
 
     renderCall(args, theme, _context) {
       const host = String(args.host ?? "");
-      let label: string;
-      if (args.path) {
-        label = basename(String(args.path));
-      } else if (args.command) {
-        const firstLine = String(args.command).split("\n")[0].trim();
-        const MAX = 80;
-        label = firstLine.length > MAX
-          ? `${firstLine.slice(0, MAX - 1)}…`
-          : firstLine || "(command)";
-      } else {
-        label = "inline";
-      }
-      const text =
+      const headerPrefix =
         theme.fg("toolTitle", theme.bold("run_script")) +
-        " → " +
-        theme.fg("accent", host) +
-        "  " +
-        theme.fg("text", label);
-      return new Text(text, 1, 0);
+        theme.fg("dim", " → ") +
+        theme.fg("accent", host);
+
+      // Path-based script: show basename
+      if (args.path) {
+        const label = basename(String(args.path));
+        return withTopDivider(
+          new Text(headerPrefix + "  " + theme.fg("text", label), 1, 0),
+          theme,
+        );
+      }
+
+      // Inline command
+      if (args.command !== undefined) {
+        const raw = String(args.command);
+        const lines = raw.split("\n");
+        // Strip trailing blank lines so "cmd\n" stays single-line
+        while (lines.length > 1 && lines[lines.length - 1].trim() === "") {
+          lines.pop();
+        }
+
+        if (lines.length <= 1) {
+          // Single-line: compact display
+          const single = lines[0] ?? "";
+          const display = single
+            ? highlightShell(single, theme)
+            : "(empty)";
+          return withTopDivider(
+            new Text(
+              headerPrefix + "  " + theme.fg("text", "$ ") + display,
+              1,
+              0,
+            ),
+            theme,
+          );
+        }
+
+        // Multi-line: boxed code block
+        const out: string[] = [];
+        out.push(headerPrefix + theme.fg("dim", `  (${lines.length} lines)`));
+        for (const line of lines) {
+          out.push(
+            "  " +
+              theme.fg("dim", "│") +
+              " " +
+              (line ? highlightShell(line, theme) : ""),
+          );
+        }
+        return withTopDivider(new Text(out.join("\n"), 1, 0), theme);
+      }
+
+      return withTopDivider(
+        new Text(headerPrefix + "  " + theme.fg("text", "inline"), 1, 0),
+        theme,
+      );
     },
 
     renderResult(result, _options, theme, _context) {
@@ -472,19 +526,17 @@ export default function (pi: ExtensionAPI) {
     name: "file_upload",
     label: "File Upload",
     description:
-      "Upload a single file (configs, data, certificates, scripts, static assets, etc.) from the local working directory to a remote Ansible host and automatically verify its integrity by computing the local MD5 and running `md5sum` on the remote host. The remote file is written as-is and is NOT executed.",
+      "Upload a single file to a remote host. Supports any file type: configs, data, certificates, scripts, static assets, templates, log archives, etc. Specify an explicit absolute remotePath.",
     promptSnippet:
-      "Upload a single file to a remote Ansible host and verify its MD5",
+      "Upload a single file to a remote host",
     promptGuidelines: [
-      "Use file_upload to upload any file type: configs, data files, certificates, scripts, static assets, templates, log archives, etc.",
-      "file_upload automatically computes the local MD5 and runs `md5sum` on the remote host to verify integrity end-to-end. The result line `MD5 verified: SUCCESS` or `MD5 verified: ERROR` is the source of truth — do NOT run a separate md5sum via run_script or local bash after upload; the verification is already part of file_upload.",
-      "Specify an explicit absolute remotePath. file_upload does not auto-pick a destination directory the way run_script does.",
+      "Specify an explicit absolute remotePath. file_upload does not auto-pick a destination directory.",
       "For multi-step remote work that needs both data and scripts, upload files with file_upload, then use run_script to upload and execute scripts. Never embed large blobs in inline run_script commands.",
     ],
     renderShell: "self",
     parameters: Type.Object({
       host: Type.String({
-        description: "Ansible agent host",
+        description: "Remote host",
       }),
       path: Type.String({
         description:
@@ -605,7 +657,7 @@ export default function (pi: ExtensionAPI) {
         theme.fg("dim", "Remote:") +
         " " +
         theme.fg("text", remotePath);
-      return new Text(text, 1, 0);
+      return withTopDivider(new Text(text, 1, 0), theme);
     },
 
     renderResult(result, _options, theme) {

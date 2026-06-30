@@ -82,6 +82,10 @@ export interface Terminal {
 	hideCursor(): void; // Hide the cursor
 	showCursor(): void; // Show the cursor
 
+	// Alternate screen buffer
+	enterAltScreen(): void; // Switch to alternate screen (covers the main screen)
+	exitAltScreen(): void; // Restore the main screen
+
 	// Clear operations
 	clearLine(): void; // Clear current line
 	clearFromCursor(): void; // Clear from cursor to end of screen
@@ -103,6 +107,7 @@ export class ProcessTerminal implements Terminal {
 	private resizeHandler?: () => void;
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
+	private _mouseTrackingActive = false;
 	private keyboardProtocolPushed = false;
 	private keyboardProtocolNegotiationPending = false;
 	private keyboardProtocolLateResponsePending = false;
@@ -143,6 +148,10 @@ export class ProcessTerminal implements Terminal {
 		process.stdin.setEncoding("utf8");
 		process.stdin.resume();
 
+		// Enter the alternate screen buffer so the TUI occupies the full
+		// terminal viewport and the user's prior scrollback is preserved.
+		process.stdout.write("\x1b[?1049h");
+
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 		process.stdout.write("\x1b[?2004h");
 
@@ -160,6 +169,17 @@ export class ProcessTerminal implements Terminal {
 		// events that lose modifier information. Must run AFTER setRawMode(true)
 		// since that resets console mode flags.
 		this.enableWindowsVTInput();
+
+		// Enable SGR mouse tracking so the terminal sends mouse events as
+		// `\x1b[<B;X;YM` / `m` sequences. 1002 = button-event tracking
+		// (press/release + wheel); 1006 = SGR encoding. We do not enable
+		// 1003 (any-event) to avoid generating events on every cursor move.
+		// Opt out with PI_TUI_NO_MOUSE=1 for SSH/remote scenarios where
+		// per-event TCP latency would be noticeable.
+		if (process.env.PI_TUI_NO_MOUSE !== "1") {
+			process.stdout.write("\x1b[?1002h\x1b[?1006h");
+			this._mouseTrackingActive = true;
+		}
 
 		// Query and enable Kitty keyboard protocol
 		// The query handler intercepts input temporarily, then installs the user's handler
@@ -412,6 +432,10 @@ export class ProcessTerminal implements Terminal {
 			process.stdout.write("\x1b[>4;0m");
 			this._modifyOtherKeysActive = false;
 		}
+		if (this._mouseTrackingActive) {
+			process.stdout.write("\x1b[?1002l\x1b[?1006l");
+			this._mouseTrackingActive = false;
+		}
 
 		const previousHandler = this.inputHandler;
 		this.inputHandler = undefined;
@@ -464,6 +488,10 @@ export class ProcessTerminal implements Terminal {
 			process.stdout.write("\x1b[>4;0m");
 			this._modifyOtherKeysActive = false;
 		}
+		if (this._mouseTrackingActive) {
+			process.stdout.write("\x1b[?1002l\x1b[?1006l");
+			this._mouseTrackingActive = false;
+		}
 
 		// Clean up StdinBuffer
 		if (this.stdinBuffer) {
@@ -491,6 +519,9 @@ export class ProcessTerminal implements Terminal {
 		if (process.stdin.setRawMode) {
 			process.stdin.setRawMode(this.wasRaw);
 		}
+
+		// Leave the alternate screen buffer, restoring the user's main screen.
+		process.stdout.write("\x1b[?1049l");
 	}
 
 	write(data: string): void {
@@ -529,6 +560,14 @@ export class ProcessTerminal implements Terminal {
 
 	showCursor(): void {
 		process.stdout.write("\x1b[?25h");
+	}
+
+	enterAltScreen(): void {
+		process.stdout.write("\x1b[?1049h");
+	}
+
+	exitAltScreen(): void {
+		process.stdout.write("\x1b[?1049l");
 	}
 
 	clearLine(): void {

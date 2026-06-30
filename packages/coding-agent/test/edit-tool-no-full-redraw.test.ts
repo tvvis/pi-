@@ -23,6 +23,8 @@ class FakeTerminal implements Terminal {
 	moveBy(_lines: number): void {}
 	hideCursor(): void {}
 	showCursor(): void {}
+	enterAltScreen(): void {}
+	exitAltScreen(): void {}
 	clearLine(): void {}
 	clearFromCursor(): void {}
 	clearScreen(): void {}

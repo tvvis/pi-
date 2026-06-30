@@ -181,6 +181,257 @@ const RULES: HighlightRule[] = [
 ];
 
 /**
+ * Highlight a single line of shell command syntax (vim-like).
+ *
+ * Colors:
+ *   comments    → syntaxComment
+ *   strings     → syntaxString
+ *   variables   → syntaxVariable
+ *   commands    → syntaxKeyword
+ *   numbers     → syntaxNumber
+ *   operators   → syntaxOperator
+ */
+export function highlightShell(line: string, theme: Theme): string {
+  if (!line) return line;
+
+  interface Token {
+    text: string;
+    style?: (s: string) => string;
+  }
+
+  const tokens: Token[] = [];
+  let i = 0;
+  let expectCommand = true;
+
+  while (i < line.length) {
+    // ── Whitespace ─────────────────────────────────────────────
+    if (/^\s/.test(line[i])) {
+      let j = i;
+      while (j < line.length && /^\s$/.test(line[j])) j++;
+      tokens.push({ text: line.slice(i, j) });
+      i = j;
+      continue;
+    }
+
+    // ── Comment #... ──────────────────────────────────────────
+    if (line[i] === "#") {
+      tokens.push({
+        text: line.slice(i),
+        style: (s) => theme.fg("syntaxComment", s),
+      });
+      break;
+    }
+
+    // ── Single-quoted string '...' ────────────────────────────
+    if (line[i] === "'") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== "'") j++;
+      const end = j < line.length ? j + 1 : j;
+      tokens.push({
+        text: line.slice(i, end),
+        style: (s) => theme.fg("syntaxString", s),
+      });
+      i = end;
+      expectCommand = false;
+      continue;
+    }
+
+    // ── Double-quoted string "..." ────────────────────────────
+    if (line[i] === '"') {
+      let j = i + 1;
+      while (j < line.length && line[j] !== '"') {
+        if (line[j] === "\\") j++;
+        j++;
+      }
+      const end = j < line.length ? j + 1 : j;
+      tokens.push({
+        text: line.slice(i, end),
+        style: (s) => theme.fg("syntaxString", s),
+      });
+      i = end;
+      expectCommand = false;
+      continue;
+    }
+
+    // ── Backtick command substitution `...` ───────────────────
+    if (line[i] === "`") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== "`") {
+        if (line[j] === "\\") j++;
+        j++;
+      }
+      const end = j < line.length ? j + 1 : j;
+      tokens.push({
+        text: line.slice(i, end),
+        style: (s) => theme.fg("syntaxVariable", s),
+      });
+      i = end;
+      expectCommand = false;
+      continue;
+    }
+
+    // ── Dollar-brace variable ${...} ───────────────────────────
+    if (
+      line[i] === "$" &&
+      i + 1 < line.length &&
+      line[i + 1] === "{"
+    ) {
+      let j = i + 2;
+      let depth = 1;
+      while (j < line.length && depth > 0) {
+        if (line[j] === "{") depth++;
+        if (line[j] === "}") depth--;
+        if (depth > 0) j++;
+      }
+      const end = depth === 0 ? j + 1 : j;
+      tokens.push({
+        text: line.slice(i, end),
+        style: (s) => theme.fg("syntaxVariable", s),
+      });
+      i = end;
+      expectCommand = false;
+      continue;
+    }
+
+    // ── Dollar-paren command substitution $(...) ────────────────
+    if (
+      line[i] === "$" &&
+      i + 1 < line.length &&
+      line[i + 1] === "("
+    ) {
+      let j = i + 2;
+      let depth = 1;
+      while (j < line.length && depth > 0) {
+        if (line[j] === "(") depth++;
+        if (line[j] === ")") depth--;
+        if (depth > 0) j++;
+      }
+      const end = depth === 0 ? j + 1 : j;
+      tokens.push({
+        text: line.slice(i, end),
+        style: (s) => theme.fg("syntaxVariable", s),
+      });
+      i = end;
+      expectCommand = false;
+      continue;
+    }
+
+    // ── Dollar variable $VAR / $? / $$ / $! / etc. ────────────
+    if (line[i] === "$" && i + 1 < line.length) {
+      const next = line[i + 1];
+      // Special one-char vars: $? $$ $! $# $* $@ $- $0-$9
+      if (/[?! #*@\-0-9]/.test(next)) {
+        tokens.push({
+          text: line.slice(i, i + 2),
+          style: (s) => theme.fg("syntaxVariable", s),
+        });
+        i += 2;
+        expectCommand = false;
+        continue;
+      }
+      // Word var
+      if (/[a-zA-Z_]/.test(next)) {
+        let j = i + 2;
+        while (j < line.length && /[a-zA-Z0-9_]/.test(line[j])) j++;
+        tokens.push({
+          text: line.slice(i, j),
+          style: (s) => theme.fg("syntaxVariable", s),
+        });
+        i = j;
+        expectCommand = false;
+        continue;
+      }
+    }
+
+    // ── Numbers (not at command position) ─────────────────────
+    if (/\d/.test(line[i]) && !expectCommand) {
+      let j = i;
+      while (j < line.length && /\d/.test(line[j])) j++;
+      tokens.push({
+        text: line.slice(i, j),
+        style: (s) => theme.fg("syntaxNumber", s),
+      });
+      i = j;
+      continue;
+    }
+
+    // ── Operators | & ; < > ────────────────────────────────────
+    if (/[|&;<>]/.test(line[i])) {
+      let j: number;
+      if (
+        line[i] === "|" &&
+        i + 1 < line.length &&
+        line[i + 1] === "|"
+      )
+        j = i + 2;
+      else if (
+        line[i] === "&" &&
+        i + 1 < line.length &&
+        line[i + 1] === "&"
+      )
+        j = i + 2;
+      else if (
+        line[i] === ">" &&
+        i + 1 < line.length &&
+        line[i + 1] === ">"
+      )
+        j = i + 2;
+      else if (
+        line[i] === "<" &&
+        i + 1 < line.length &&
+        line[i + 1] === "<"
+      )
+        j = i + 2;
+      else j = i + 1;
+
+      tokens.push({
+        text: line.slice(i, j),
+        style: (s) => theme.fg("syntaxOperator", s),
+      });
+
+      // After |, ||, &&, ; the next word is a command
+      if (
+        line[i] === "|" ||
+        (line[i] === "&" && line[i + 1] === "&") ||
+        line[i] === ";"
+      ) {
+        expectCommand = true;
+      } else {
+        expectCommand = false;
+      }
+      i = j;
+      continue;
+    }
+
+    // ── Command word (first token after pipe/semicolon/start) ─
+    if (expectCommand) {
+      let j = i;
+      while (
+        j < line.length &&
+        /[^\s|&;<>"'`$]/.test(line[j])
+      )
+        j++;
+      if (j > i) {
+        tokens.push({
+          text: line.slice(i, j),
+          style: (s) => theme.fg("syntaxKeyword", s),
+        });
+        i = j;
+        expectCommand = false;
+        continue;
+      }
+    }
+
+    // ── Fallback: plain character ─────────────────────────────
+    tokens.push({ text: line[i] });
+    i++;
+    expectCommand = false;
+  }
+
+  return tokens.map((t) => (t.style ? t.style(t.text) : t.text)).join("");
+}
+
+/**
  * Highlight a single line of remote output.
  *
  * First tries structured `ls -l` formatting (per-field colors), then

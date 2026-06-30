@@ -23,6 +23,9 @@
 
 ### 1.1 基础设施
 
+> **实施变更**：HSplit 方案在实施中被阶段 5 引入的 `leftPanel` 机制替代
+> （见下"关键架构改动"），未提交。下方 1.1 / 1.2 描述保留为设计参考。
+
 - `packages/tui/src/components/hsplit.ts` 新增 `HSplit` 组件
   - `new HSplit(left: Component, right: Component, options?)`
   - 选项：`width`（绝对/百分比）、`minWidth`、`maxWidth`、`separator`（接收
@@ -444,8 +447,6 @@
 ### 文件清单
 
 **新增**
-- `packages/tui/src/components/hsplit.ts`（Phase 1）
-- `packages/tui/test/hsplit.test.ts`（Phase 1）
 - `packages/coding-agent/src/modes/interactive/components/sidebar-recent-files.ts`（Phase 4）
 - `packages/coding-agent/src/modes/interactive/sidebar-recent-files-store.ts`（Phase 4.1）
 - `packages/coding-agent/test/suite/sidebar-recent-files-store.test.ts`（Phase 4.1）
@@ -458,7 +459,7 @@
 **修改**
 - `packages/tui/src/tui.ts`（Phase 4 — `leftPanel` 机制；Phase 5.0 — `viewportTopLine` 滚动 + SGR mouse 拦截 + `onMouseWheel`/`onMouseButton` + `parseSgrMouse`/`SgrMouseEvent` export + `compositeOverlays`/`compositeLeftPanel` 接受 `viewportStart`）
 - `packages/tui/src/terminal.ts`（Phase 1 — `enterAltScreen`/`exitAltScreen`；Phase 5.0 — SGR mouse tracking `?1002h`/`?1006h` start/stop + `PI_TUI_NO_MOUSE=1` 逃逸口）
-- `packages/tui/src/index.ts`（Phase 1 — export `HSplit`；Phase 5.0 — export `parseSgrMouse`/`SgrMouseEvent`/`SgrMouseButton`）
+- `packages/tui/src/index.ts`（Phase 5.0 — export `parseSgrMouse`/`SgrMouseEvent`/`SgrMouseButton`）
 - `packages/coding-agent/src/core/keybindings.ts`（Phase 2 + 4）
 - `packages/coding-agent/src/core/settings-manager.ts`（Phase 2）
 - `packages/coding-agent/src/core/slash-commands.ts`（Phase 2）

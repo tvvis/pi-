@@ -214,6 +214,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// Custom header not supported in RPC mode - requires TUI access
 		},
 
+		pushChatMarkdown(_content: string, _opts?: { title?: string }): void {
+			// Chat mutations not supported in RPC mode
+		},
+
 		setTitle(title: string): void {
 			// Fire and forget - host can implement terminal title control
 			output({

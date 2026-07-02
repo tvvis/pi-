@@ -1992,21 +1992,24 @@ export class InteractiveMode {
 			this.customFooter.dispose();
 		}
 
-		// Remove current footer from main column
+		// The footer lives in the fixed bottom panel (added in init()). Manage
+		// it there — managing mainColumn would double-render because init() also
+		// placed the built-in footer in the bottom panel.
+		const bottomPanel = this.ui.getBottomPanel();
 		if (this.customFooter) {
-			this.mainColumn.removeChild(this.customFooter);
+			bottomPanel.removeChild(this.customFooter);
 		} else {
-			this.mainColumn.removeChild(this.footer);
+			bottomPanel.removeChild(this.footer);
 		}
 
 		if (factory) {
 			// Create and add custom footer, passing the data provider
 			this.customFooter = factory(this.ui, theme, this.footerDataProvider);
-			this.mainColumn.addChild(this.customFooter);
+			bottomPanel.addChild(this.customFooter);
 		} else {
 			// Restore built-in footer
 			this.customFooter = undefined;
-			this.mainColumn.addChild(this.footer);
+			bottomPanel.addChild(this.footer);
 		}
 
 		this.ui.requestRender();
@@ -2097,6 +2100,7 @@ export class InteractiveMode {
 			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
 			setFooter: (factory) => this.setExtensionFooter(factory),
 			setHeader: (factory) => this.setExtensionHeader(factory),
+			pushChatMarkdown: (content, opts) => this.pushChatMarkdown(content, opts),
 			setTitle: (title) => this.ui.terminal.setTitle(title),
 			custom: (factory, options) => this.showExtensionCustom(factory, options),
 			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
@@ -3142,6 +3146,21 @@ export class InteractiveMode {
 	}
 
 	/**
+	 * Append a markdown message to the chat history. Public API exposed
+	 * via ExtensionUIContext.pushChatMarkdown; used by the plan tool to
+	 * render the plan draft for review, and available to extensions.
+	 */
+	pushChatMarkdown(content: string, opts?: { title?: string }): void {
+		const title = opts?.title ?? "Markdown";
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new DynamicBorder());
+		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", title)), 1, 0));
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Markdown(content, 1, 0, this.getMarkdownThemeWithSettings()));
+		this.ui.invalidate();
+	}
+
+	/**
 	 * Show a status message in the chat.
 	 *
 	 * If multiple status messages are emitted back-to-back (without anything else being added to the chat),
@@ -3767,8 +3786,10 @@ export class InteractiveMode {
 	 *   1. 执行      — write the final plan to <cwd>/.pi/<slug>.md,
 	 *                    exit plan mode; model then implements it
 	 *   2. 继续完善  — stay in plan mode (no-op)
-	 *   3. 新 session — exit plan mode, start a fresh session, surface
-	 *                    the old draft path so the new session can read it
+	 *   3. 新 session — create a clean new session (no inherited planning
+	 *                    conversation) and inject the previous draft's path
+	 *                    into its system prompt so the model reads the plan
+	 *                    and executes it.
 	 */
 	private async handlePlanModeChoice(choice: 1 | 2 | 3): Promise<void> {
 		if (!this.inPlanMode) return;
@@ -3786,20 +3807,31 @@ export class InteractiveMode {
 				this.showStatus("Plan mode: continue refining");
 				return;
 			case 3: {
-				const oldSessionId = this.sessionManager.getSessionId();
-				const oldDraftPath = getDraftRoot() ? `${getDraftRoot()}/current.md` : undefined;
+				// Create a clean new session (no inherited planning conversation)
+				// and inject the previous draft's path into its system prompt so
+				// the model reads the plan and executes it. The new session has
+				// its own sessionId, so re-entering plan mode later uses an
+				// independent draft root — drafts never collide across sessions.
+				const draftRoot = getDraftRoot();
+				const oldDraftPath = draftRoot ? path.join(draftRoot, "draft.md") : undefined;
+				const hasDraft = oldDraftPath ? fs.existsSync(oldDraftPath) : false;
 				this.exitPlanModeInternal("execute");
 				try {
 					const result = await this.runtimeHost.newSession();
 					if (result.cancelled) return;
 					this.renderCurrentSessionState();
+					if (hasDraft && oldDraftPath) {
+						this.session.setSessionNote(
+							`A plan was drafted in a previous session at \`${oldDraftPath}\`. Read that file first, then execute the plan it describes.`,
+						);
+					}
 					this.showStatus(
-						oldDraftPath
-							? `New session. Approved plan: ${oldDraftPath} (session ${oldSessionId ?? "?"})`
-							: "New session. (Approved plan path unknown.)",
+						hasDraft && oldDraftPath
+							? `New session (clean context). Plan draft: ${oldDraftPath}`
+							: "New session (clean context).",
 					);
 				} catch (error: unknown) {
-					await this.handleFatalRuntimeError("Failed to create new session", error);
+					await this.handleFatalRuntimeError("Failed to create session", error);
 				}
 				return;
 			}
@@ -3807,14 +3839,14 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Write the plan draft at `~/.pi/draft/<session-id>/current.md`
+	 * Write the plan draft at `~/.pi/draft/<session-id>/draft.md`
 	 * to `<cwd>/.pi/<slug>.md`. Returns the final path, or undefined
 	 * if the draft is missing/empty (the popup already warned the user).
 	 */
 	private async writePlanModeFinal(): Promise<string | undefined> {
 		const draftRoot = getDraftRoot();
 		if (!draftRoot) return undefined;
-		const draftPath = path.join(draftRoot, "current.md");
+		const draftPath = path.join(draftRoot, "draft.md");
 		let content: string;
 		try {
 			content = await readFile(draftPath, "utf-8");
@@ -4963,6 +4995,12 @@ export class InteractiveMode {
 			this.loadingAnimation = undefined;
 		}
 		this.statusContainer.clear();
+
+		// Plan mode is session-scoped. Do not carry it over to a fresh session.
+		if (this.inPlanMode) {
+			this.exitPlanModeInternal("manual");
+		}
+
 		try {
 			const result = await this.runtimeHost.newSession();
 			if (result.cancelled) {

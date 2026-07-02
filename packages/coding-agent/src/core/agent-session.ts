@@ -331,6 +331,7 @@ export class AgentSession {
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	private _sessionNote: string | undefined = undefined;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -825,6 +826,19 @@ export class AgentSession {
 	}
 
 	/**
+	 * Set a per-session note appended to the system prompt. Used to carry
+	 * context into a freshly created session (e.g. pointing the model at a
+	 * plan draft from a previous session after a plan-mode "new session"
+	 * branch). Cleared automatically on session replacement because a new
+	 * AgentSession instance is constructed. Not persisted to the session
+	 * file.
+	 */
+	setSessionNote(note: string | undefined): void {
+		this._sessionNote = note;
+		this._refreshBaseSystemPrompt();
+	}
+
+	/**
 	 * Rebuild the base system prompt (against the current model) and push it
 	 * into agent state. Use whenever model, tools, or model-conditional
 	 * settings may have changed.
@@ -949,6 +963,9 @@ export class AgentSession {
 		}
 		if (modelAppendFragments.length > 0) {
 			appendParts.push(modelAppendFragments.join("\n\n"));
+		}
+		if (this._sessionNote) {
+			appendParts.push(this._sessionNote);
 		}
 		const appendSystemPrompt = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;

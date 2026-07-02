@@ -26,8 +26,8 @@
 │     1. 执行   → 退出 plan mode，写           │
 │                <cwd>/.pi/<slug>.md，执行     │
 │     2. 继续完善 → 留在 plan mode，draft 保留 │
-│     3. 新 session → fork 当前 session 到新   │
-│                  session（plan 作为上下文）   │
+│     3. 新 session → 干净新 session，plan 路径   │
+│                  注入新 session 系统提示       │
 │                                            │
 │   (执行模式下 model 正常读写，按 plan 改代码) │
 └────────────────────────────────────────────┘
@@ -73,10 +73,10 @@ interface PlanModeState {
 ```
 ~/.pi/draft/
   └─ <session-id>/
-      └─ current.md       # 最新草稿（model 每次 write 覆盖）
+      └─ draft.md       # 最新草稿（model 每次 write 覆盖）
 ```
 
-读取：popup 触发时读 `current.md`。历史 draft 不保留（v1 简化）。
+读取：popup 触发时读 `draft.md`。历史 draft 不保留（v1 简化）。
 
 ### 终稿文件
 
@@ -130,7 +130,7 @@ Available tools:
 
 Workflow:
 1. Discuss with the user (conversationally or via `ask` tool)
-2. Write your evolving plan to `~/.pi/draft/<session-id>/current.md`
+2. Write your evolving plan to `~/.pi/draft/<session-id>/draft.md`
    using `write` or `edit`
 3. When the plan is complete and you are ready for the user to
    confirm, call `plan({ready: true})`
@@ -172,26 +172,18 @@ Workflow:
 ```
 ┌───────────────────── plan ready ──────────────────────┐
 │                                                       │
-│  # Plan: Add rate limiting                            │
+│  → 1. 执行      exit plan mode, write final, execute │
+│    2. 继续完善  stay in plan mode, continue Q&A      │
+│    3. 新 session  clean session, execute from draft  │
 │                                                       │
-│  ## Goal                                              │
-│  ...                                                  │
-│                                                       │
-│  ## Approach                                          │
-│  ...                                                  │
-│                                                       │
-│  (scrollable plan content)                            │
-│                                                       │
-├───────────────────────────────────────────────────────┤
-│  1. 执行        2. 继续完善        3. 新 session      │
-│  ↑/↓ 移动  Enter 确认                                │
+│  ↑/↓ 移动  1-3 快捷  Enter 确认  Esc = refine        │
 └───────────────────────────────────────────────────────┘
 ```
 
-数据：读 `~/.pi/draft/<session-id>/current.md`。
-
-空 draft 时：popup 显示 "Plan is empty" + 仅显示选项 2（继续完善）
-和 3（取消）。Option 1 灰掉。
+Popup **不**嵌 plan 内容（不再有 18 行截断）。Draft 由 plan tool 在 popup
+弹出前调 `ExtensionUIContext.pushChatMarkdown` 推到 chat history，
+用户在 chat 里看完整版（可滚、可复制）。空 / 缺失 draft 推一条警告到
+chat 代替 markdown。
 
 ## 三个选项的语义
 
@@ -212,24 +204,29 @@ Workflow:
 ### 2. 继续完善
 
 - 留在 plan mode
-- draft 文件保留（`current.md` 不动）
+- draft 文件保留（`draft.md` 不动）
 - Prompt 追加 system 消息：
   ```
   <system>
   User wants to continue refining. Draft is at
-  ~/.pi/draft/<session-id>/current.md. Continue Q&A.
+  ~/.pi/draft/<session-id>/draft.md. Continue Q&A.
   </system>
   ```
 - Model 继续对话、继续改 draft
 
 ### 3. 新 session
 
-- 留在 plan mode（当前 session）
-- Fork 当前 session 到新 session
-  - 新 session 拿到 plan 作为 system 消息上下文
+- 退出 plan mode（当前 session）
+- **创建干净的新 session**（`runtimeHost.newSession()`），不继承 plan mode
+  期间的对话历史——新 session 上下文为空（隔离）
+  - 新 session 有独立的 sessionId，重新进入 plan mode 时 draft 路径不会
+    与旧 session 冲突（`~/.pi/draft/<新 sid>/`）
   - 新 session 处于普通执行模式（write/edit/bash 全开）
-  - 弹出 "Created new session: <new-id>. Switch now? [Y/n]"
-- 当前 session 仍处于 plan mode
+  - 把旧 draft 路径通过 `AgentSession.setSessionNote` 注入新 session 的
+    system prompt，提示 model 先读 draft 再执行
+  - 弹出 "New session (clean context). Plan draft: <draft path>"
+- draft 文件保留在 `~/.pi/draft/<旧 sid>/draft.md`，新 session 可读
+- 仅当 draft 文件真实存在时才注入 note；无 draft 时不注入（空白 session）
 
 ## Plan 工具定义
 
@@ -368,11 +365,12 @@ function planModePathGuard(filePath: string, ctx: ToolContext): void {
 
 1. **write 工具 guard 抛异常 vs 静默失败**：选异常。model 必须看到错误
    才知道自己违规了；静默失败会误导 model。
-2. **draft 路径绝对 vs 相对**：model 写 `draft/current.md` 还是
-   `~/.pi/draft/<sid>/current.md`？建议 tool 接受相对路径（基于
+2. **draft 路径绝对 vs 相对**：model 写 `draft/draft.md` 还是
+   `~/.pi/draft/<sid>/draft.md`？建议 tool 接受相对路径（基于
    `<sid>` 自动 join），但 error 信息里给绝对路径让 model 知道
-3. **新 session 选项的实现复杂度**：fork session + plan 注入是新功能，
-   复用 `createBranchedSession` 还是另写？建议复用
+3. **新 session 选项的实现**：采用 `runtimeHost.newSession()` 创建干净新
+   session（不 fork），通过 `AgentSession.setSessionNote` 把旧 draft 路径
+   注入新 session 的 system prompt。不继承对话历史，上下文隔离。
 4. **popup 在 sidebar 显示时的处理**：sidebar 是 leftPanel 不会被 popup
    覆盖（overlay 走 `terminal` 直绘）；确认 popup 也走直绘
 5. **plan tool 的 execute 抛 cancelled**：signal abort 时 popup 关闭，
@@ -387,12 +385,12 @@ function planModePathGuard(filePath: string, ctx: ToolContext): void {
 - 手动：
   1. `/plan foo` → footer 角标出现
   2. Model 用 ask 问问题 → 弹窗选项正常
-  3. Model 写 draft → 文件出现在 `~/.pi/draft/<sid>/current.md`
+  3. Model 写 draft → 文件出现在 `~/.pi/draft/<sid>/draft.md`
   4. Model 调 `plan(ready=true)` → popup 出现
   5. 选 1 → plan mode 退出，model 写终稿到 `<cwd>/.pi/foo.md`
   6. Model 按 plan 改代码（正常写权限）
   7. 选 2 → 留在 plan mode，draft 保留
-  8. 选 3 → 新 session 弹出，plan 注入新 session
+  8. 选 3 → 干净新 session 弹出，旧 draft 路径注入新 session 系统提示
   9. `alt+o` → toggle plan mode
   10. 在 plan mode 试 `write foo.txt` → 抛 PlanModeWriteError
   11. 在 plan mode 试 `bash` → 抛禁用错误

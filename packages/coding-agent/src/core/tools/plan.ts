@@ -7,6 +7,7 @@
  * model as a descriptive text result.
  */
 
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Text } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -44,24 +45,6 @@ function formatPlanResult(content: Array<{ type: string; text?: string }> | unde
 	return textBlock?.text ? chalk.white(textBlock.text) : theme.fg("muted", "(no result)");
 }
 
-const CHOICE_LABELS: Record<PlanChoice, string> = {
-	1: "执行 (exit plan mode, write final plan, proceed)",
-	2: "继续完善 (stay in plan mode, continue Q&A)",
-	3: "新 session (fork to a new session, execute there)",
-};
-
-const CHOICE_INSTRUCTIONS: Record<PlanChoice, string> = {
-	1:
-		"User chose to execute. Plan mode is now OFF. The system has already written the final plan to " +
-		"`<cwd>/.pi/<slug>.md` (slug derived from the plan title). Proceed to implement the plan.",
-	2:
-		"User wants to continue refining. Plan mode stays ON. Continue Q&A and update the draft at " +
-		"`~/.pi/draft/<session-id>/current.md` until the plan is ready.",
-	3:
-		"User wants to start a new session. The new session was created; the old draft path was surfaced in the status bar. " +
-		"Switch to it and read the draft to execute the plan.",
-};
-
 type PlanRenderState = Record<string, never>;
 
 export function createPlanToolDefinition(): ToolDefinition<typeof planSchema, { choice: PlanChoice }, PlanRenderState> {
@@ -71,12 +54,12 @@ export function createPlanToolDefinition(): ToolDefinition<typeof planSchema, { 
 		renderShell: "self",
 		description:
 			"Plan-mode tool. Call with ready=true to signal that the plan draft at " +
-			"~/.pi/draft/<session-id>/current.md is complete and request user confirmation. " +
+			"~/.pi/draft/<session-id>/draft.md is complete and request user confirmation. " +
 			"This tool is only usable in plan mode.",
 		promptSnippet: "Signal that the plan is ready for user confirmation",
 		promptGuidelines: [
 			"Call plan({ready: true}) only when the plan draft is fully written and you are at a decision point",
-			"The user will be shown the plan and asked to choose: execute / refine / new session",
+			"The plan is rendered in the chat for review, then a 3-option popup appears: execute / refine / new session",
 			"Do not call this tool outside plan mode",
 		],
 		parameters: planSchema,
@@ -101,9 +84,32 @@ export function createPlanToolDefinition(): ToolDefinition<typeof planSchema, { 
 			if (!draftRoot) {
 				throw new Error("plan tool: no draft root (plan mode state missing)");
 			}
-			const draftPath = join(draftRoot, "current.md");
+			const draftPath = join(draftRoot, "draft.md");
 
-			const choice = await ctx.ui.custom<PlanChoice>((tui, _theme, _kb, done) => {
+			// Render the draft in the chat for review (scrollback / copy). The
+			// popup only shows the 3 options; the actual plan content lives
+			// in the chat so the user can read it without truncation.
+			let draftContent: string;
+			try {
+				draftContent = await readFile(draftPath, "utf-8");
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException)?.code;
+				if (code === "ENOENT") {
+					draftContent = "";
+				} else {
+					throw error;
+				}
+			}
+			if (draftContent.trim().length === 0) {
+				ctx.ui.pushChatMarkdown(
+					`_Plan draft is empty or missing at \`${draftPath}\`. Refine before confirming execute._`,
+					{ title: "Plan draft" },
+				);
+			} else {
+				ctx.ui.pushChatMarkdown(draftContent, { title: `Plan draft (${draftPath})` });
+			}
+
+			const choice = await ctx.ui.custom<PlanChoice>((_tui, _theme, _kb, done) => {
 				let resolved = false;
 				const onAbort = () => {
 					if (resolved) return;
@@ -112,16 +118,12 @@ export function createPlanToolDefinition(): ToolDefinition<typeof planSchema, { 
 				};
 				signal?.addEventListener("abort", onAbort, { once: true });
 
-				const popup = new PlanConfirmPopup({ draftPath }, (value) => {
+				const popup = new PlanConfirmPopup({}, (value) => {
 					if (resolved) return;
 					resolved = true;
 					signal?.removeEventListener("abort", onAbort);
 					done(value);
 				});
-				// Load the draft outside the constructor so the popup renders
-				// the layout immediately, then fills the body when the file
-				// arrives. Errors surface as inline text in the popup.
-				void popup.finishRender(tui);
 				return popup;
 			});
 
@@ -131,20 +133,13 @@ export function createPlanToolDefinition(): ToolDefinition<typeof planSchema, { 
 			}
 
 			// Fire-and-forget: the interactive mode handles the per-choice
-			// side effect (exit plan mode, fork to new session, ...).
+			// side effect (exit plan mode, create a clean new session, ...).
 			// The popup is already dismissed; the user sees the result
 			// immediately while the model is told about the choice.
 			void triggerPlanModeChoice(choice);
 
 			return {
-				content: [
-					{
-						type: "text",
-						text:
-							`User chose: ${CHOICE_LABELS[choice] ?? `option ${choice}`}\n\n` +
-							(CHOICE_INSTRUCTIONS[choice] ?? `User chose option ${choice}.`),
-					},
-				],
+				content: [{ type: "text", text: `User chose option ${choice}.` }],
 				details: { choice },
 			};
 		},

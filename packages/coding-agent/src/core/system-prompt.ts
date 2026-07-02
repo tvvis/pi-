@@ -193,7 +193,7 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += `- plan: call with \`ready=true\` to request user confirmation\n\n`;
 		prompt += `Workflow:\n`;
 		prompt += `1. Discuss with the user (conversationally or via the \`ask\` tool)\n`;
-		prompt += `2. Write your evolving plan to \`${planMode.draftRoot}/current.md\` using \`write\` or \`edit\`\n`;
+		prompt += `2. Write your evolving plan to \`${planMode.draftRoot}/draft.md\` using \`write\` or \`edit\`\n`;
 		prompt += `3. When the plan is complete and you are ready for the user to confirm, call \`plan({ready: true})\`\n`;
 		prompt += `4. Wait for the user to choose: execute / refine / new session\n\n`;
 		if (planMode.description) {

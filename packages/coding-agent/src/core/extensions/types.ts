@@ -180,6 +180,10 @@ export interface ExtensionUIContext {
 	/** Set a custom header component (shown at startup, above chat), or undefined to restore the built-in header. */
 	setHeader(factory: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined): void;
 
+	/** Append a markdown message to the chat history. Used by the plan tool to render
+	 * the plan draft for review, but available to extensions for any purpose. */
+	pushChatMarkdown(content: string, options?: { title?: string }): void;
+
 	/** Set the terminal window/tab title. */
 	setTitle(title: string): void;
 

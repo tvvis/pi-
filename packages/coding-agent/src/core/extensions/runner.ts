@@ -203,6 +203,7 @@ const noOpUIContext: ExtensionUIContext = {
 	setWidget: () => {},
 	setFooter: () => {},
 	setHeader: () => {},
+	pushChatMarkdown: () => {},
 	setTitle: () => {},
 	custom: async () => undefined as never,
 	pasteToEditor: () => {},

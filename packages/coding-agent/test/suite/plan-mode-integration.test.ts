@@ -9,6 +9,7 @@
  */
 
 import { rmSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -104,7 +105,7 @@ describe("plan mode integration", () => {
 
 		const write = getTool(harness, "write");
 		const draft = getDraftRoot()!;
-		const result = await write.execute("tc1", { path: join(draft, "current.md"), content: "# Plan: x\n" });
+		const result = await write.execute("tc1", { path: join(draft, "draft.md"), content: "# Plan: x\n" });
 		const text = result.content.find((c) => c.type === "text")?.text ?? "";
 		expect(text).toContain("Successfully wrote");
 	});
@@ -132,5 +133,71 @@ describe("plan mode integration", () => {
 
 		const plan = getTool(harness, "plan");
 		await expect(plan.execute("tc1", { ready: true })).rejects.toBeInstanceOf(PlanToolRequiresPlanModeError);
+	});
+
+	it("plan tool pushes the draft to chat and shows the popup when ready", async () => {
+		// Use the unwrapped ToolDefinition so we can pass a mock ctx.
+		const { createPlanToolDefinition } = await import("../../src/core/tools/plan.ts");
+		const def = createPlanToolDefinition();
+
+		enterPlanMode({ sessionId: SESSION_ID });
+		// Write a draft that the plan tool will read and push to chat.
+		const draft = getDraftRoot()!;
+		await mkdir(draft, { recursive: true });
+		const draftContent = "# Plan: ship the thing\n\n## Approach\ndo it\n";
+		await writeFile(join(draft, "draft.md"), draftContent, "utf-8");
+
+		const pushCalls: Array<{ content: string; opts?: { title?: string } }> = [];
+		let customCalled = 0;
+		const ctx = {
+			hasUI: true,
+			ui: {
+				pushChatMarkdown: (content: string, opts?: { title?: string }) => {
+					pushCalls.push({ content, opts });
+				},
+				custom: <T>(_factory: unknown) => {
+					customCalled++;
+					return Promise.resolve(1 as T);
+				},
+			},
+		};
+
+		const result = await def.execute("tc1", { ready: true }, undefined, undefined, ctx as never);
+
+		// pushChatMarkdown was called with the draft content and a title.
+		expect(pushCalls).toHaveLength(1);
+		expect(pushCalls[0]!.content).toBe(draftContent);
+		expect(pushCalls[0]!.opts?.title).toContain("Plan draft");
+
+		// The popup factory was invoked.
+		expect(customCalled).toBe(1);
+
+		// The result text is the short single-line form (D block).
+		const text = result.content.find((c) => c.type === "text")?.text ?? "";
+		expect(text).toBe("User chose option 1.");
+		expect(result.details).toEqual({ choice: 1 });
+	});
+
+	it("plan tool pushes a warning when the draft is missing", async () => {
+		const { createPlanToolDefinition } = await import("../../src/core/tools/plan.ts");
+		const def = createPlanToolDefinition();
+
+		enterPlanMode({ sessionId: SESSION_ID });
+		// Don't write a draft — file doesn't exist.
+		const pushCalls: Array<{ content: string; opts?: { title?: string } }> = [];
+		const ctx = {
+			hasUI: true,
+			ui: {
+				pushChatMarkdown: (content: string, opts?: { title?: string }) => {
+					pushCalls.push({ content, opts });
+				},
+				custom: <T>(_factory: unknown) => Promise.resolve(2 as T),
+			},
+		};
+
+		await def.execute("tc1", { ready: true }, undefined, undefined, ctx as never);
+
+		expect(pushCalls).toHaveLength(1);
+		expect(pushCalls[0]!.content).toMatch(/empty or missing/i);
 	});
 });

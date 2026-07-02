@@ -76,7 +76,7 @@ describe("isPathAllowedInPlanMode", () => {
 	it("returns true for paths inside the draft root", () => {
 		enterPlanMode({ sessionId: SESSION_ID });
 		const draftRoot = getDraftRoot()!;
-		expect(isPathAllowedInPlanMode(join(draftRoot, "current.md"))).toBe(true);
+		expect(isPathAllowedInPlanMode(join(draftRoot, "draft.md"))).toBe(true);
 		expect(isPathAllowedInPlanMode(join(draftRoot, "subdir", "note.md"))).toBe(true);
 	});
 

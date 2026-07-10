@@ -38,6 +38,7 @@ export interface AppKeybindings {
 	"app.recentFile.open.9": true;
 	"app.session.toggleNamedFilter": true;
 	"app.editor.external": true;
+	"app.explorer.open": true;
 	"app.message.followUp": true;
 	"app.message.dequeue": true;
 	"app.clipboard.pasteImage": true;
@@ -124,6 +125,10 @@ export const KEYBINDINGS = {
 	"app.editor.external": {
 		defaultKeys: [],
 		description: "Open external editor",
+	},
+	"app.explorer.open": {
+		defaultKeys: "alt+e",
+		description: "Open project folder in file explorer",
 	},
 	"app.message.followUp": {
 		defaultKeys: "alt+enter",

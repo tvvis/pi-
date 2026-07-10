@@ -361,6 +361,80 @@ function planModePathGuard(filePath: string, ctx: ToolContext): void {
 | 5 | 终稿写入（`<cwd>/.pi/<slug>.md`）+ slug 提取规则 | 3 |
 | 6 | 测试（harness + 单元）+ 文档 + CHANGELOG | 全部 |
 
+## 提示词定制：prompts.md
+
+plan-mode 的系统提示词支持用户从一份 markdown 文件覆盖。设计目标是：
+
+- 用户可以填具体指导（如何问问题、Plan 结构、执行行为）而不改代码
+- 结构性骨架（工具限制、draft/plan 路径、`# Plan: <title>` 必填）由代码硬管，
+  用户忘记写关键约束时系统仍正确
+- 渐进式启用：文件缺失 → 现有骨架照常；只填一个 slot → 只覆盖那一个
+
+### 文件查找
+
+按 `settings.json` 模式的两层查找，**文件级整文件胜出**：
+
+1. 项目：`<cwd>/.pi/prompts.md`
+2. 全局：`~/.pi/agent/prompts.md`
+3. 都没有 → 空 map，不影响现有行为
+
+### 文件格式
+
+```markdown
+# Prompts
+
+## Plan Mode
+
+<!-- 用户填：plan 阶段指南 -->
+
+## Executing Plan
+
+<!-- 用户填：执行行为指南 -->
+
+## <新场景>
+
+<!-- 未来扩展槽位，只在代码侧常量表里注册 -->
+```
+
+H2 heading → slot key 映射由 `src/core/prompt-slots.ts` 的 `PROMPT_SLOTS`
+常量表决定，目前注册了两个：
+
+| slot key | heading text | 变量替换 |
+|----------|-------------|----------|
+| `planMode` | `Plan Mode` | （无） |
+| `executePlan` | `Executing Plan` | `${planPath}`, `${planTitle}` |
+
+heading 匹配是 case-insensitive、trim 后等于 heading text，首次匹配胜出；
+未知 H2 节（不是任何 slot）会被忽略，方便用户写笔记。
+
+### 渲染
+
+`buildSystemPrompt` 在原有 `## Plan Mode` / `## Executing Plan` 段落尾部追加
+slot body。骨架仍然由代码硬管：
+
+```markdown
+## Plan Mode
+[骨架：must NOT modify / Available tools / draftRoot / plan({ready: true}) / 
+       "# Plan: <title>" / description if any]
+[slot：用户正文]
+
+## Executing Plan
+[骨架：An approved plan is at `<planPath>` / Title if known]
+[slot：用户正文，${planPath}/${planTitle} 已替换]
+```
+
+空 / 全空白 / 文件不存在 → 该 slot 不渲染（静默 opt-in）。
+
+### 扩展示例
+
+新增 slot（例如 `compaction`）：
+
+1. `PROMPT_SLOTS` 加一行：`compaction: "Compacting Context"`
+2. `buildSystemPrompt` 调用 `${PROMOT_SLOTS.compaction}` 处插入新段落
+3. 用户在 `prompts.md` 写 `## Compacting Context` 即可
+
+不动 prompt slot 系统的核心机制。
+
 ## 风险点
 
 1. **write 工具 guard 抛异常 vs 静默失败**：选异常。model 必须看到错误

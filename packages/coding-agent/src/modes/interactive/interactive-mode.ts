@@ -107,6 +107,7 @@ import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import {
 	derivePlanSlug,
+	derivePlanTitle,
 	enterPlanMode,
 	exitPlanMode,
 	getDraftRoot,
@@ -692,6 +693,7 @@ export class InteractiveMode {
 				hint("app.thinking.toggle", "to expand thinking"),
 				hint("app.sidebar.toggle", "to toggle sidebar"),
 				hint("app.editor.external", "for external editor"),
+				hint("app.explorer.open", "to open project folder"),
 				rawKeyHint("/", "for commands"),
 				rawKeyHint("!", "to run bash"),
 				rawKeyHint("!!", "to run bash (no context)"),
@@ -2567,6 +2569,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.recentFile.open.8", () => this.openRecentFile(8));
 		this.defaultEditor.onAction("app.recentFile.open.9", () => this.openRecentFile(9));
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
+		this.defaultEditor.onAction("app.explorer.open", () => this.openProjectExplorer());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
@@ -3795,10 +3798,11 @@ export class InteractiveMode {
 		if (!this.inPlanMode) return;
 		switch (choice) {
 			case 1: {
-				const finalPath = await this.writePlanModeFinal();
+				const finalized = await this.writePlanModeFinal();
 				this.exitPlanModeInternal("execute");
-				if (finalPath) {
-					this.showStatus(`Plan written to ${finalPath} — plan mode off`);
+				if (finalized) {
+					this.session.setExecutePlan({ planPath: finalized.finalPath, title: finalized.title });
+					this.showStatus(`Plan written to ${finalized.finalPath} — plan mode off`);
 				}
 				return;
 			}
@@ -3808,28 +3812,59 @@ export class InteractiveMode {
 				return;
 			case 3: {
 				// Create a clean new session (no inherited planning conversation)
-				// and inject the previous draft's path into its system prompt so
-				// the model reads the plan and executes it. The new session has
-				// its own sessionId, so re-entering plan mode later uses an
+				// but record lineage back to the planning session so the session
+				// tree can render the plan → execute relationship. The new session
+				// has its own sessionId, so re-entering plan mode later uses an
 				// independent draft root — drafts never collide across sessions.
 				const draftRoot = getDraftRoot();
 				const oldDraftPath = draftRoot ? path.join(draftRoot, "draft.md") : undefined;
 				const hasDraft = oldDraftPath ? fs.existsSync(oldDraftPath) : false;
+				const parentSessionFile = this.sessionManager.getSessionFile();
 				this.exitPlanModeInternal("execute");
 				try {
-					const result = await this.runtimeHost.newSession();
+					const result = await this.runtimeHost.newSession({
+						parentSession: parentSessionFile,
+						parentRelation: "plan",
+					});
 					if (result.cancelled) return;
 					this.renderCurrentSessionState();
 					if (hasDraft && oldDraftPath) {
-						this.session.setSessionNote(
-							`A plan was drafted in a previous session at \`${oldDraftPath}\`. Read that file first, then execute the plan it describes.`,
-						);
+						// Point the new session at the existing plan draft for execution.
+						// The "Executing Plan" system prompt section (paired with the user's
+						// `## Executing Plan` slot body) tells the model the plan path;
+						// sessionNote is no longer the right surface for plan guidance.
+						let draftTitle: string | undefined;
+						try {
+							const draftContent = await readFile(oldDraftPath, "utf-8");
+							draftTitle = derivePlanTitle(draftContent);
+							// Auto-name the new session from the plan title so `/resume`
+							// shows the relationship between plan and execution sessions.
+							if (draftTitle) {
+								const capped = draftTitle.length > 80 ? `${draftTitle.slice(0, 77)}...` : draftTitle;
+								this.session.sessionManager.appendSessionInfo(capped);
+							}
+						} catch {
+							// Best-effort: missing/unreadable draft, no H1, etc.
+							// Naming failure must not block the execution turn below.
+						}
+						this.session.setExecutePlan({ planPath: oldDraftPath, title: draftTitle });
 					}
 					this.showStatus(
 						hasDraft && oldDraftPath
 							? `New session (clean context). Plan draft: ${oldDraftPath}`
 							: "New session (clean context).",
 					);
+					// Kick off the execution turn automatically so the new session
+					// does not sit idle on a stuck "working" spinner (TODO 1).
+					if (hasDraft && oldDraftPath) {
+						try {
+							await this.session.prompt(`Read the plan draft at \`${oldDraftPath}\` and execute it.`);
+						} catch (promptError) {
+							this.showError(
+								`Failed to start execution: ${promptError instanceof Error ? promptError.message : String(promptError)}`,
+							);
+						}
+					}
 				} catch (error: unknown) {
 					await this.handleFatalRuntimeError("Failed to create session", error);
 				}
@@ -3840,10 +3875,10 @@ export class InteractiveMode {
 
 	/**
 	 * Write the plan draft at `~/.pi/draft/<session-id>/draft.md`
-	 * to `<cwd>/.pi/<slug>.md`. Returns the final path, or undefined
-	 * if the draft is missing/empty (the popup already warned the user).
+	 * to `<cwd>/.pi/<slug>.md`. Returns the final path + derived
+	 * title (or undefined if the draft is missing/empty).
 	 */
-	private async writePlanModeFinal(): Promise<string | undefined> {
+	private async writePlanModeFinal(): Promise<{ finalPath: string; title?: string } | undefined> {
 		const draftRoot = getDraftRoot();
 		if (!draftRoot) return undefined;
 		const draftPath = path.join(draftRoot, "draft.md");
@@ -3862,7 +3897,7 @@ export class InteractiveMode {
 		const slug = derivePlanSlug(content);
 		const finalPath = path.join(piDir, `${slug}.md`);
 		await writeFile(finalPath, content, "utf-8");
-		return finalPath;
+		return { finalPath, title: derivePlanTitle(content) };
 	}
 
 	/**
@@ -4003,6 +4038,37 @@ export class InteractiveMode {
 			this.ui.start();
 			// Force full re-render since external editor uses alternate screen
 			this.ui.requestRender(true);
+		}
+	}
+
+	private openProjectExplorer(): void {
+		const cwd = this.sessionManager.getCwd();
+		let command: string;
+		let args: string[];
+
+		if (process.platform === "win32") {
+			command = "explorer.exe";
+			args = [cwd];
+		} else if (isWslEnvironment()) {
+			command = "explorer.exe";
+			args = [toWindowsPath(cwd)];
+		} else if (process.platform === "darwin") {
+			command = "open";
+			args = [cwd];
+		} else {
+			command = "xdg-open";
+			args = [cwd];
+		}
+
+		try {
+			const child = spawn(command, args, { detached: true, stdio: "ignore" });
+			child.on("error", () => {
+				this.showStatus(`Failed to open file explorer: ${command}`);
+			});
+			child.unref();
+			this.showStatus(`Opening project folder: ${cwd}`);
+		} catch {
+			this.showStatus(`Failed to open file explorer: ${command}`);
 		}
 	}
 
@@ -4912,6 +4978,7 @@ export class InteractiveMode {
 		const expandTools = this.getAppKeyDisplay("app.tools.expand");
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
 		const externalEditor = this.getAppKeyDisplay("app.editor.external");
+		const openExplorer = this.getAppKeyDisplay("app.explorer.open");
 		const cycleModelBackward = this.getAppKeyDisplay("app.model.cycleBackward");
 		const followUp = this.getAppKeyDisplay("app.message.followUp");
 		const dequeue = this.getAppKeyDisplay("app.message.dequeue");
@@ -4956,6 +5023,7 @@ export class InteractiveMode {
 | \`${expandTools}\` | Toggle tool output expansion |
 | \`${toggleThinking}\` | Toggle thinking block visibility |
 | \`${externalEditor}\` | Edit message in external editor |
+| \`${openExplorer}\` | Open project folder in file explorer |
 | \`${followUp}\` | Queue follow-up message |
 | \`${dequeue}\` | Restore queued messages |
 | \`${pasteImage}\` | Paste image from clipboard |

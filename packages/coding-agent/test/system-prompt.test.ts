@@ -244,6 +244,8 @@ describe("buildSystemPrompt plan mode", () => {
 		expect(prompt).toContain("/home/user/.pi/draft/abc123/*");
 		expect(prompt).toContain("PlanModeWriteError");
 		expect(prompt).toContain("plan({ready: true})");
+		// Plan drafts must start with `# Plan: <title>` so child sessions can be auto-named.
+		expect(prompt).toContain("# Plan: <title>");
 	});
 
 	test("includes the description when provided", () => {
@@ -266,5 +268,140 @@ describe("buildSystemPrompt plan mode", () => {
 			planMode: { draftRoot: "/tmp/draft" },
 		});
 		expect(prompt).not.toContain("The user is planning:");
+	});
+
+	test("emits no user body when customPrompts.planMode is absent", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			planMode: { draftRoot: "/tmp/draft" },
+		});
+		// Skeleton wording remains, but no slot body slipped in.
+		expect(prompt).toContain("## Plan Mode");
+		expect(prompt).not.toContain("Ask one question at a time");
+	});
+
+	test("inserts the planMode slot body when provided", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			planMode: { draftRoot: "/tmp/draft" },
+			customPrompts: {
+				planMode: "Ask one question at a time, in order: goal → scope → acceptance.",
+				executePlan: undefined,
+			},
+		});
+		expect(prompt).toContain("## Plan Mode");
+		expect(prompt).toContain("Ask one question at a time");
+		// Skeleton still present (slot doesn't replace it).
+		expect(prompt).toContain("`plan({ready: true})`");
+	});
+
+	test("ignores empty/whitespace-only slot bodies", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			planMode: { draftRoot: "/tmp/draft" },
+			customPrompts: { planMode: "   \n\n  ", executePlan: undefined },
+		});
+		expect(prompt).toContain("## Plan Mode");
+		expect(prompt).not.toContain("Ask one question at a time");
+	});
+});
+
+describe("buildSystemPrompt executePlan", () => {
+	test("does not include the Executing Plan section by default", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+		});
+		expect(prompt).not.toContain("## Executing Plan");
+	});
+
+	test("includes skeleton with planPath when executePlan is set", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			executePlan: { planPath: "/tmp/.pi/add-rate-limiting.md" },
+		});
+		expect(prompt).toContain("## Executing Plan");
+		expect(prompt).toContain("`/tmp/.pi/add-rate-limiting.md`");
+		expect(prompt).toContain("source of truth");
+	});
+
+	test("renders title when provided", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			executePlan: { planPath: "/tmp/.pi/x.md", title: "Add rate limiting" },
+		});
+		expect(prompt).toContain("Title: **Add rate limiting**");
+	});
+
+	test("substitutes planPath / planTitle placeholders inside the executePlan slot body", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			executePlan: { planPath: "/tmp/.pi/x.md", title: "X" },
+			customPrompts: { planMode: undefined, executePlan: `Read \${planPath} (title: \${planTitle}) and proceed.` },
+		});
+		expect(prompt).toContain("Read /tmp/.pi/x.md (title: X) and proceed");
+	});
+
+	test("leaves unresolved placeholder literal intact when var missing", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			executePlan: { planPath: "/tmp/.pi/x.md" },
+			customPrompts: { planMode: undefined, executePlan: `title=\${planTitle} path=\${planPath}` },
+		});
+		expect(prompt).toContain(`title=\${planTitle}`); // literal kept
+		expect(prompt).toContain("path=/tmp/.pi/x.md"); // substituted
+	});
+
+	test("no skeleton or slot when executePlan is absent", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+		});
+		expect(prompt).not.toContain("Executing Plan");
+		expect(prompt).not.toContain("source of truth");
+	});
+});
+
+describe("buildSystemPrompt customPrompts", () => {
+	test("does not insert slots when both keys are undefined", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			planMode: { draftRoot: "/tmp/draft" },
+			executePlan: { planPath: "/tmp/.pi/x.md" },
+			customPrompts: { planMode: undefined, executePlan: undefined },
+		});
+		expect(prompt).toContain("## Plan Mode");
+		expect(prompt).toContain("## Executing Plan");
+		// No user text slipped in.
+		expect(prompt).not.toContain("Ask one question");
+		expect(prompt).not.toContain("proceed");
 	});
 });

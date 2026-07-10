@@ -6,6 +6,8 @@ import { existsSync, readFileSync } from "node:fs";
 import type { Model } from "@earendil-works/pi-ai";
 import { minimatch } from "minimatch";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
+import type { PromptSlotMap } from "./prompt-slots.ts";
+import { substitutePromptVars } from "./prompt-slots.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
@@ -35,6 +37,27 @@ export interface BuildSystemPromptOptions {
 		draftRoot: string;
 		description?: string;
 	};
+	/**
+	 * Execute-plan context. When present (and `planMode` is absent),
+	 * the system prompt is augmented with an "Executing Plan" section
+	 * that points the model at the approved plan path. The user's
+	 * slot body (see {@link customPrompts}) layers execution behavior
+	 * guidance on top of the structural skeleton.
+	 */
+	executePlan?: {
+		/** Absolute path of the finalized plan file. */
+		planPath: string;
+		/** Optional one-line plan title for prompt-level summary. */
+		title?: string;
+	};
+	/**
+	 * User-authored prompt bodies keyed by slot id (see `PROMPT_SLOTS`).
+	 * Values come from the prompts file; missing keys → no contribution
+	 * for that slot. Bodies are inserted under the matching `## `
+	 * heading and may contain `${name}` placeholders which the
+	 * builder resolves against per-slot variable maps.
+	 */
+	customPrompts?: PromptSlotMap;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -49,6 +72,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
 		planMode,
+		executePlan,
+		customPrompts,
 	} = options;
 	const resolvedCwd = cwd;
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -191,13 +216,30 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += `- write, edit: ONLY to \`${planMode.draftRoot}/*\` (other paths throw PlanModeWriteError)\n`;
 		prompt += `- bash: disabled\n`;
 		prompt += `- plan: call with \`ready=true\` to request user confirmation\n\n`;
-		prompt += `Workflow:\n`;
-		prompt += `1. Discuss with the user (conversationally or via the \`ask\` tool)\n`;
-		prompt += `2. Write your evolving plan to \`${planMode.draftRoot}/draft.md\` using \`write\` or \`edit\`\n`;
-		prompt += `3. When the plan is complete and you are ready for the user to confirm, call \`plan({ready: true})\`\n`;
-		prompt += `4. Wait for the user to choose: execute / refine / new session\n\n`;
+		prompt += `Write the plan to \`${planMode.draftRoot}/draft.md\` using \`write\` or \`edit\`. Start the draft with a single \`# Plan: <title>\` heading on the first line (required — the title is used to auto-name child sessions in \`/resume\` so plan/derive relationships stay traceable). When the draft is ready for user confirmation, call \`plan({ready: true})\` and wait for the user to choose: execute / refine / new session.\n`;
 		if (planMode.description) {
-			prompt += `The user is planning: ${planMode.description}\n`;
+			prompt += `\nThe user is planning: ${planMode.description}\n`;
+		}
+		const planModeSlot = customPrompts?.planMode;
+		if (planModeSlot && planModeSlot.trim().length > 0) {
+			prompt += `\n${planModeSlot.trim()}\n`;
+		}
+	}
+
+	if (executePlan) {
+		prompt += `\n\n## Executing Plan\n\n`;
+		prompt += `An approved plan is at \`${executePlan.planPath}\`. `;
+		if (executePlan.title) {
+			prompt += `Title: **${executePlan.title}**. `;
+		}
+		prompt += `Read it before acting — the plan is the source of truth.\n`;
+		const executePlanSlot = customPrompts?.executePlan;
+		if (executePlanSlot && executePlanSlot.trim().length > 0) {
+			const vars: Record<string, string | undefined> = {
+				planPath: executePlan.planPath,
+				planTitle: executePlan.title,
+			};
+			prompt += `\n${substitutePromptVars(executePlanSlot.trim(), vars)}\n`;
 		}
 	}
 

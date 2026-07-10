@@ -14,7 +14,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type {
 	Agent,
 	AgentEvent,
@@ -42,6 +42,7 @@ import {
 	withCustomThinkingLevelsOverrides,
 	withThinkingLevelOverrides,
 } from "@earendil-works/pi-ai";
+import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { getDraftRoot, getPlanModeState } from "../modes/interactive/plan-mode-state.ts";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
@@ -91,6 +92,7 @@ import {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
+import { type PromptSlotMap, parsePromptSlots } from "./prompt-slots.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
@@ -106,6 +108,12 @@ import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapp
 // ============================================================================
 // Skill Block Parsing
 // ============================================================================
+
+/** User-authored prompts file name (under project or agent dir). */
+const PROMPTS_FILE_NAME = "prompts.md";
+
+/** Empty slot map (all keys undefined). Returned when no prompts file exists. */
+const EMPTY_PROMPT_SLOTS: PromptSlotMap = { planMode: undefined, executePlan: undefined };
 
 /** Parsed skill block from a user message */
 export interface ParsedSkillBlock {
@@ -332,6 +340,7 @@ export class AgentSession {
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _sessionNote: string | undefined = undefined;
+	private _executePlan: { planPath: string; title?: string } | undefined = undefined;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -839,6 +848,23 @@ export class AgentSession {
 	}
 
 	/**
+	 * Activate or clear the execute-plan mode for this session. When set,
+	 * the system prompt gains an `## Executing Plan` section pointing at
+	 * `planPath`; the user's `## Executing Plan` slot body (from the
+	 * prompts file) is layered on top. Pass `undefined` to clear. Mutually
+	 * exclusive with plan mode (the UI flow keeps them from overlapping).
+	 */
+	setExecutePlan(ctx: { planPath: string; title?: string } | undefined): void {
+		this._executePlan = ctx;
+		this._refreshBaseSystemPrompt();
+	}
+
+	/** Current execute-plan context, or `undefined` when not in that mode. */
+	get executePlan(): { planPath: string; title?: string } | undefined {
+		return this._executePlan;
+	}
+
+	/**
 	 * Rebuild the base system prompt (against the current model) and push it
 	 * into agent state. Use whenever model, tools, or model-conditional
 	 * settings may have changed.
@@ -935,6 +961,28 @@ export class AgentSession {
 		};
 	}
 
+	private _buildExecutePlanContext(): { planPath: string; title?: string } | undefined {
+		return this._executePlan;
+	}
+
+	private _buildCustomPromptsContext(): PromptSlotMap {
+		const projectPath = join(this._cwd, CONFIG_DIR_NAME, PROMPTS_FILE_NAME);
+		const globalPath = join(getAgentDir(), PROMPTS_FILE_NAME);
+		const content = this._readPromptsFile(projectPath) ?? this._readPromptsFile(globalPath);
+		if (content === undefined) return EMPTY_PROMPT_SLOTS;
+		return parsePromptSlots(content);
+	}
+
+	private _readPromptsFile(filePath: string): string | undefined {
+		try {
+			return readFileSync(filePath, "utf-8");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException)?.code;
+			if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return undefined;
+			throw error;
+		}
+	}
+
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
@@ -981,6 +1029,8 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 			planMode: this._buildPlanModeContext(),
+			executePlan: this._buildExecutePlanContext(),
+			customPrompts: this._buildCustomPromptsContext(),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}

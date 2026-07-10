@@ -201,3 +201,78 @@ describe("plan mode integration", () => {
 		expect(pushCalls[0]!.content).toMatch(/empty or missing/i);
 	});
 });
+
+describe("AgentSession execute-plan + customPrompts", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) {
+			harnesses.pop()?.cleanup();
+		}
+		exitPlanMode();
+	});
+
+	it("setExecutePlan adds the Executing Plan section with the plan path", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		expect(harness.session.systemPrompt).not.toContain("## Executing Plan");
+
+		harness.session.setExecutePlan({ planPath: "/tmp/.pi/custom.md", title: "Custom plan" });
+
+		const prompt = harness.session.systemPrompt;
+		expect(prompt).toContain("## Executing Plan");
+		expect(prompt).toContain("`/tmp/.pi/custom.md`");
+		expect(prompt).toContain("Title: **Custom plan**");
+	});
+
+	it("setExecutePlan(undefined) clears the section", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.session.setExecutePlan({ planPath: "/tmp/.pi/x.md" });
+		expect(harness.session.systemPrompt).toContain("## Executing Plan");
+		harness.session.setExecutePlan(undefined);
+		expect(harness.session.systemPrompt).not.toContain("## Executing Plan");
+	});
+
+	it("loads planMode slot body from <cwd>/.pi/prompts.md", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		// AgentSession uses harness.tempDir as its cwd (not sessionManager.getCwd()).
+		const piDir = join(harness.tempDir, ".pi");
+		await mkdir(piDir, { recursive: true });
+		await writeFile(join(piDir, "prompts.md"), "## Plan Mode\n\nUSER_PROMPT_MARKER: ask goal first\n", "utf-8");
+		enterPlanMode({ sessionId: SESSION_ID });
+		harness.session.setActiveToolsByName(PLAN_TOOLS);
+
+		const prompt = harness.session.systemPrompt;
+		expect(prompt).toContain("## Plan Mode");
+		expect(prompt).toContain("USER_PROMPT_MARKER: ask goal first");
+	});
+
+	it("loads executePlan slot body from <cwd>/.pi/prompts.md and substitutes planPath var", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const piDir = join(harness.tempDir, ".pi");
+		await mkdir(piDir, { recursive: true });
+		await writeFile(join(piDir, "prompts.md"), `## Executing Plan\n\nread \${planPath} and follow it\n`, "utf-8");
+		harness.session.setExecutePlan({ planPath: "/tmp/.pi/x.md", title: "My Plan" });
+
+		const prompt = harness.session.systemPrompt;
+		expect(prompt).toContain("read /tmp/.pi/x.md and follow it");
+		expect(prompt).toContain("Title: **My Plan**");
+	});
+
+	it("missing prompts file: skeleton still emits, no slot body", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		enterPlanMode({ sessionId: SESSION_ID });
+		harness.session.setActiveToolsByName(PLAN_TOOLS);
+		const prompt = harness.session.systemPrompt;
+		expect(prompt).toContain("## Plan Mode");
+		// Skeleton wording remains
+		expect(prompt).toContain("PlanModeWriteError");
+		// No extra slot body
+		expect(prompt).not.toContain("USER_PROMPT_MARKER");
+	});
+});

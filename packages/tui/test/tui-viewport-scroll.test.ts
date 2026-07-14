@@ -331,9 +331,9 @@ describe("TUI mouse tracking mode", () => {
 			term.stop();
 
 			const allOut = stdoutWrites.join("");
-			assert.ok(allOut.includes("\x1b[?1002h"), "should enable button-event tracking on start");
+			assert.ok(allOut.includes("\x1b[?1000h"), "should enable press/release + wheel tracking on start");
 			assert.ok(allOut.includes("\x1b[?1006h"), "should enable SGR encoding on start");
-			assert.ok(allOut.includes("\x1b[?1002l"), "should disable button-event tracking on stop");
+			assert.ok(allOut.includes("\x1b[?1000l"), "should disable press/release + wheel tracking on stop");
 			assert.ok(allOut.includes("\x1b[?1006l"), "should disable SGR encoding on stop");
 		} finally {
 			process.stdout.write = origWrite;
@@ -365,7 +365,7 @@ describe("TUI mouse tracking mode", () => {
 			term.stop();
 
 			const allOut = stdoutWrites.join("");
-			assert.ok(!allOut.includes("\x1b[?1002h"), "PI_TUI_NO_MOUSE should suppress mouse enable");
+			assert.ok(!allOut.includes("\x1b[?1000h"), "PI_TUI_NO_MOUSE should suppress mouse enable");
 			assert.ok(!allOut.includes("\x1b[?1006h"), "PI_TUI_NO_MOUSE should suppress SGR encoding");
 		} finally {
 			process.stdout.write = origWrite;

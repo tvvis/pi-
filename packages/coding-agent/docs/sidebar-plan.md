@@ -211,7 +211,7 @@
 
 **实现路径**：
 - Phase A：开 mouse 模式
-  - `terminal.ts` 启动时发送 `\x1b[?1002h\x1b[?1006h`（wheel tracking + SGR），退出时发关闭
+  - `terminal.ts` 启动时发送 `\x1b[?1000h\x1b[?1006h`（press/release + wheel + SGR），退出时发关闭
   - 不需要 `\x1b[?1003h`（避免移动也要事件，量太大）
 - Phase B：解析 wheel
   - `stdin-buffer.ts` 在识别 SGR 鼠标后通过 `data` 事件转发（已有 `mouseMatch` 正则，确认转发的形状）
@@ -241,7 +241,7 @@
 - main 区域 wheel down：往下推到底
 - sidebar 区域 wheel：不响 main，sidebar 内部 scroll（可选）
 - input 区域 wheel：不响输入框
-- 终端/进程退出后 mouse mode 恢复原始状态（不留 `\x1b[?1002h`）
+- 终端/进程退出后 mouse mode 恢复原始状态（不留 `\x1b[?1000h`）
 
 **测试**：
 - `packages/tui/test/stdin-buffer.test.ts` 加 SGR wheel 正向 case
@@ -458,7 +458,7 @@
 
 **修改**
 - `packages/tui/src/tui.ts`（Phase 4 — `leftPanel` 机制；Phase 5.0 — `viewportTopLine` 滚动 + SGR mouse 拦截 + `onMouseWheel`/`onMouseButton` + `parseSgrMouse`/`SgrMouseEvent` export + `compositeOverlays`/`compositeLeftPanel` 接受 `viewportStart`）
-- `packages/tui/src/terminal.ts`（Phase 1 — `enterAltScreen`/`exitAltScreen`；Phase 5.0 — SGR mouse tracking `?1002h`/`?1006h` start/stop + `PI_TUI_NO_MOUSE=1` 逃逸口）
+- `packages/tui/src/terminal.ts`（Phase 1 — `enterAltScreen`/`exitAltScreen`；Phase 5.0 — SGR mouse tracking `?1000h`/`?1006h` start/stop + `PI_TUI_NO_MOUSE=1` 逃逸口）
 - `packages/tui/src/index.ts`（Phase 5.0 — export `parseSgrMouse`/`SgrMouseEvent`/`SgrMouseButton`）
 - `packages/coding-agent/src/core/keybindings.ts`（Phase 2 + 4）
 - `packages/coding-agent/src/core/settings-manager.ts`（Phase 2）
@@ -498,7 +498,7 @@
   - onMouseWheel 收到 wheel、focused component 不会拿到原始 SGR（不会被插入文本）
   - onMouseButton 收到 press/release
   - 非 mouse 输入不触发 mouse callback
-  - `ProcessTerminal.start` 发 `?1002h`/`?1006h`；stop 发对应关闭
+  - `ProcessTerminal.start` 发 `?1000h`/`?1006h`；stop 发对应关闭
   - `PI_TUI_NO_MOUSE=1` 抑制 mouse 启用
 - 手动验证：tmux 100x30 启动 TUI，连续发 3 条消息收 3 个回复，状态栏 TPS / context 实时更新；wheel up 3 行/下 3 行通过 `ui.scrollUp/scrollDown` 生效（视口层 + interactive-mode 路由层都过单测）
 - 待用户验证：实际 terminal（iTerm2/WezTerm/Kitty）滚轮手感；wheel down 到底是否需要 snap 到底（上面 follow-up）

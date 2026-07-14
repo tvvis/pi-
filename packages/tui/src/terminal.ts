@@ -171,13 +171,13 @@ export class ProcessTerminal implements Terminal {
 		this.enableWindowsVTInput();
 
 		// Enable SGR mouse tracking so the terminal sends mouse events as
-		// `\x1b[<B;X;YM` / `m` sequences. 1002 = button-event tracking
-		// (press/release + wheel); 1006 = SGR encoding. We do not enable
-		// 1003 (any-event) to avoid generating events on every cursor move.
-		// Opt out with PI_TUI_NO_MOUSE=1 for SSH/remote scenarios where
-		// per-event TCP latency would be noticeable.
+		// `\x1b[<B;X;YM` / `m` sequences. 1000 = press/release + wheel;
+		// 1006 = SGR encoding. We deliberately do not enable 1002 (button-event
+		// tracking) or 1003 (any-event): they add drag/motion events that the
+		// app does not consume. Opt out with PI_TUI_NO_MOUSE=1 for SSH/remote
+		// scenarios where per-event TCP latency would be noticeable.
 		if (process.env.PI_TUI_NO_MOUSE !== "1") {
-			process.stdout.write("\x1b[?1002h\x1b[?1006h");
+			process.stdout.write("\x1b[?1000h\x1b[?1006h");
 			this._mouseTrackingActive = true;
 		}
 
@@ -433,7 +433,7 @@ export class ProcessTerminal implements Terminal {
 			this._modifyOtherKeysActive = false;
 		}
 		if (this._mouseTrackingActive) {
-			process.stdout.write("\x1b[?1002l\x1b[?1006l");
+			process.stdout.write("\x1b[?1000l\x1b[?1006l");
 			this._mouseTrackingActive = false;
 		}
 
@@ -489,7 +489,7 @@ export class ProcessTerminal implements Terminal {
 			this._modifyOtherKeysActive = false;
 		}
 		if (this._mouseTrackingActive) {
-			process.stdout.write("\x1b[?1002l\x1b[?1006l");
+			process.stdout.write("\x1b[?1000l\x1b[?1006l");
 			this._mouseTrackingActive = false;
 		}
 

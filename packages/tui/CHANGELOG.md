@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added SGR mouse tracking on `ProcessTerminal.start` (`\x1b[?1002h` button events + `\x1b[?1006h` SGR encoding), and the matching disable sequences on stop. Set `PI_TUI_NO_MOUSE=1` to opt out (useful over SSH where per-event TCP latency is noticeable).
+- Added SGR mouse tracking on `ProcessTerminal.start` (`\x1b[?1000h` press/release + wheel + `\x1b[?1006h` SGR encoding), and the matching disable sequences on stop. Set `PI_TUI_NO_MOUSE=1` to opt out (useful over SSH where per-event TCP latency is noticeable).
 - Added `TUI.scrollUp` / `TUI.scrollDown` / `TUI.scrollToBottom` / `TUI.getViewportTopOffset` / `TUI.getMaxViewportTopOffset` / `TUI.isAtBottom` for scrolling the main content. `scrollUp` anchors the viewport on a specific content line so new content arriving at the bottom does not push the user out of their reading position; scrolling back to the natural bottom resumes auto-following.
 - Added `TUI.onMouseWheel` and `TUI.onMouseButton` callbacks. The TUI eats SGR mouse sequences at the input layer so the focused component never sees the raw escape (no more `\x1b[<64;...M` being inserted as text into the editor).
 - Exported `parseSgrMouse` and `SgrMouseEvent` / `SgrMouseButton` for consumers that want to interpret mouse events themselves.

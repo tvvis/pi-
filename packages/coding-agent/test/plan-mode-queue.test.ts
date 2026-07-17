@@ -30,6 +30,8 @@ function createFakeThis() {
 	};
 	return {
 		inPlanMode: true as boolean,
+		loadingAnimation: undefined as { stop: () => void } | undefined,
+		statusContainer: { clear: vi.fn() },
 		exitPlanModeInternal: vi.fn(),
 		enterPlanModeInternal: vi.fn(),
 		runtimeHost: {
@@ -63,6 +65,43 @@ describe("InteractiveMode plan-mode choice 4 (queue + continue planning)", () =>
 	afterEach(() => {
 		exitPlanMode();
 		rmSync(DRAFT_DIR, { recursive: true, force: true });
+	});
+
+	test("stops the in-flight working loader and clears the status container", async () => {
+		enterPlanMode({ sessionId: SESSION_ID });
+		const draftRoot = getDraftRoot()!;
+		mkdirSync(draftRoot, { recursive: true });
+		writeFileSync(join(draftRoot, "draft.md"), "# Plan: test\n", "utf-8");
+
+		const fakeThis = createFakeThis();
+		// Simulate an active working loader from the model turn that just
+		// called plan({ready:true}). Without cleanup, this widget would
+		// remain in the status container after the session swap, because
+		// agent_end on the old runtime never fires (it was aborted by
+		// dispose()).
+		const stop = vi.fn();
+		fakeThis.loadingAnimation = { stop };
+
+		await handlePlanModeChoice(fakeThis, 4);
+
+		expect(stop).toHaveBeenCalledTimes(1);
+		expect(fakeThis.loadingAnimation).toBeUndefined();
+		expect(fakeThis.statusContainer.clear).toHaveBeenCalled();
+	});
+
+	test("is a no-op on the loader when nothing is in flight", async () => {
+		enterPlanMode({ sessionId: SESSION_ID });
+		const draftRoot = getDraftRoot()!;
+		mkdirSync(draftRoot, { recursive: true });
+		writeFileSync(join(draftRoot, "draft.md"), "# Plan: test\n", "utf-8");
+
+		const fakeThis = createFakeThis();
+		// loadingAnimation is undefined; statusContainer.clear should still
+		// be called (cheap and keeps the path consistent with option 3 / /new).
+		await handlePlanModeChoice(fakeThis, 4);
+
+		expect(fakeThis.loadingAnimation).toBeUndefined();
+		expect(fakeThis.statusContainer.clear).toHaveBeenCalled();
 	});
 
 	test("creates a clean queued session with setExecutePlan and switches back to original", async () => {

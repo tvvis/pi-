@@ -4001,6 +4001,15 @@ export class InteractiveMode {
 				// and restored by the rebind sync, so we do not need to explicitly
 				// exit and re-enter plan mode here — the rebind handles it via
 				// the state file on the original session.
+				// Drop any in-flight working loader from the model turn that
+				// just called plan({ready:true}): the agent is about to be
+				// aborted by the session swap, so agent_end will never fire on
+				// the OLD runtime to clean it up for us.
+				if (this.loadingAnimation) {
+					this.loadingAnimation.stop();
+					this.loadingAnimation = undefined;
+				}
+				this.statusContainer.clear();
 				const draftRoot = getDraftRoot();
 				const oldDraftPath = draftRoot ? path.join(draftRoot, "draft.md") : undefined;
 				const hasDraft = oldDraftPath ? fs.existsSync(oldDraftPath) : false;

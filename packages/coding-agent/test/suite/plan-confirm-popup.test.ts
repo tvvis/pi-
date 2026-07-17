@@ -1,9 +1,9 @@
 /**
  * Unit tests for the simplified PlanConfirmPopup.
  *
- * The popup is a pure UI component: it shows the 3 options and forwards
+ * The popup is a pure UI component: it shows the 4 options and forwards
  * keyboard input. After the B block simplification it no longer reads
- * the draft file, has no `MAX_PLAN_LINES` cap, and the 3 options are
+ * the draft file, has no `MAX_PLAN_LINES` cap, and the 4 options are
  * always available (no "execute" disabling for empty drafts — the
  * plan tool surfaces empty/missing drafts in the chat instead).
  */
@@ -23,7 +23,7 @@ function makePopup() {
 }
 
 describe("PlanConfirmPopup (simplified)", () => {
-	it("renders 3 options without reading any file", () => {
+	it("renders 4 options without reading any file", () => {
 		const { popup } = makePopup();
 		// Just check we can render and don't throw; no file IO happened.
 		const lines = popup.render(80);
@@ -32,10 +32,11 @@ describe("PlanConfirmPopup (simplified)", () => {
 		const flat = lines.join("\n");
 		expect(flat).not.toContain("Failed to read");
 		expect(flat).not.toContain("Plan is empty");
-		// All 3 choice labels appear.
+		// All 4 choice labels appear.
 		expect(flat).toContain("执行");
 		expect(flat).toContain("继续完善");
 		expect(flat).toContain("新 session");
+		expect(flat).toContain("队列");
 	});
 
 	it("default selection is choice 2 (继续完善) so a stray Enter never executes", () => {
@@ -44,8 +45,8 @@ describe("PlanConfirmPopup (simplified)", () => {
 		expect(submitted).toEqual([2]);
 	});
 
-	it("keys 1/2/3 select the corresponding choice", () => {
-		for (const expected of [1, 2, 3] as const) {
+	it("keys 1/2/3/4 select the corresponding choice", () => {
+		for (const expected of [1, 2, 3, 4] as const) {
 			const { popup, submitted } = makePopup();
 			popup.handleInput(String(expected));
 			expect(submitted).toEqual([expected]);
@@ -81,12 +82,13 @@ describe("PlanConfirmPopup (simplified)", () => {
 		expect(submitted).toEqual([1]);
 	});
 
-	it("arrow down at the bottom (index 2) stays at the bottom — Enter confirms choice 3", () => {
+	it("arrow down at the bottom (index 3) stays at the bottom — Enter confirms choice 4", () => {
 		const { popup, submitted } = makePopup();
 		popup.handleInput("\x1b[B"); // down: index 1 -> 2
-		popup.handleInput("\x1b[B"); // down at bottom: stays at 2
+		popup.handleInput("\x1b[B"); // down: index 2 -> 3
+		popup.handleInput("\x1b[B"); // down at bottom: stays at 3
 		popup.handleInput("\n");
-		expect(submitted).toEqual([3]);
+		expect(submitted).toEqual([4]);
 	});
 
 	it("does not call onSubmit when the key is unhandled", () => {

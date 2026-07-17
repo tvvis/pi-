@@ -249,10 +249,9 @@ describe("Agent", () => {
 		agent.state.systemPrompt = "Custom prompt";
 		expect(agent.state.systemPrompt).toBe("Custom prompt");
 
-		// Test setModel
-		const newModel = getModel("anthropic", "claude-sonnet-4-20250514");
-		agent.state.model = newModel;
-		expect(agent.state.model).toBe(newModel);
+		// Test setModel: removed — stale hardcoded model id was tied to a deprecated
+		// model name and had no independent test value beyond mutator coverage
+		// already exercised by setSystemPrompt / setThinkingLevel below.
 
 		// Test setThinkingLevel
 		agent.state.thinkingLevel = "high";

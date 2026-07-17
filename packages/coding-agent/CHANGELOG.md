@@ -27,6 +27,7 @@
 - Added session lineage: sessions now record how they relate to their parent (`parentRelation: "fork" | "plan"`) in the session header, and the `/resume` session tree renders a distinct edge label per relation (`⎇` fork, `✦` plan) so plan→execute and fork relationships are visible. Plan mode choice 3 (new session) records `parentRelation: "plan"` back to the planning session while still creating a clean session with no inherited planning conversation.
 - The `/resume` session tree now defaults to collapsed: subtrees are hidden until selected. Moving the cursor (↑/↓/PageUp/PageDown) onto a session auto-expands its direct children, and `←`/`→` manually collapse/expand the selected node. The current session's ancestor path stays expanded so you can still see where you are. Collapsed nodes show a `▸` marker.
 - Plan mode choice 3 (new session) now auto-names the new session from the plan draft's `# Plan: <title>` heading (capped at 80 chars), so the plan → execute relationship is visible in `/resume` by name as well as by the `✦` edge. The plan-mode system prompt now requires drafts to start with this heading.
+- Added a fourth option ("新 session · 队列") to the plan-mode confirmation popup: queues the current plan into a clean new session (with the draft path injected via `setExecutePlan`) but does NOT auto-execute it; the original session is restored and plan mode is re-entered so the user can keep refining or plan more things here. The queued session can be resumed later via `/resume`.
 
 ### Changed
 
@@ -39,6 +40,8 @@
 - Shared the `jiti` instance across extensions in a single `loadExtensions` call and loaded them in parallel via `Promise.all` instead of awaiting each one sequentially. Cuts `rl.loadExtensions` from ~540ms to ~290ms on Bun (-45%); smaller win on Node.
 - `Home` / `End` now move the cursor to the start / end of the current line while focus is in the input box, matching the documented behavior of `tui.editor.cursorLineStart` / `tui.editor.cursorLineEnd`. They no longer scroll the chat history from the input box; use `PageUp` / `PageDown` (which already bind to `app.viewport.scrollUp` / `app.viewport.scrollDown`) to scroll the chat, or rebind `home` / `end` to `app.viewport.scrollTop` / `app.viewport.scrollBottom` in `keybindings.json` if you want the old behavior.
 - The chat now snaps to the bottom when the user submits input (Enter), so the message they just sent and the assistant's reply are visible even if they had scrolled up to read older history before pressing Enter.
+- Plan mode state is now persisted per session in `~/.pi/draft/<session-id>/.plan-mode-state.json` (written on enter, removed on explicit exit). `/resume` of a previously-plan-mode session restores plan mode via the rebind sync; the outgoing session's state file is preserved across session switches so `/resume` back to it still restores plan mode.
+- Plan mode choice 3 ("新 session") now force-flushes the new session file to disk immediately via `SessionManager.flush()`, so the queued / auto-execution session shows up in `/resume` and the session tree without waiting for the first assistant message. The file format is unchanged; the flush just bypasses the lazy-create deferral.
 
 ### Fixed
 

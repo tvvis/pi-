@@ -4,7 +4,6 @@
  * Replace everything - no discovery, explicit configuration.
  */
 
-import { getModel } from "@earendil-works/pi-ai";
 import {
 	AuthStorage,
 	createAgentSession,
@@ -25,9 +24,6 @@ if (process.env.MY_ANTHROPIC_KEY) {
 
 // Model registry with no custom models.json
 const modelRegistry = ModelRegistry.inMemory(authStorage);
-
-const model = getModel("anthropic", "claude-sonnet-4-20250514");
-if (!model) throw new Error("Model not found");
 
 // In-memory settings with overrides
 const settingsManager = SettingsManager.inMemory({
@@ -53,7 +49,8 @@ Available: read, bash. Be concise.`,
 const { session } = await createAgentSession({
 	cwd,
 	agentDir: "/tmp/my-agent",
-	model,
+	// Replace with a model id valid for your auth. Example omitted because
+	// specific model ids go stale faster than this example file.
 	thinkingLevel: "off",
 	authStorage,
 	modelRegistry,

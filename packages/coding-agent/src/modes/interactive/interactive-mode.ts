@@ -80,6 +80,7 @@ import { getCwdRelativePath, isWslEnvironment, toWindowsPath } from "../../utils
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
+import { isInAskMode } from "./ask-mode-state.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
@@ -111,6 +112,8 @@ import {
 	enterPlanMode,
 	exitPlanMode,
 	getDraftRoot,
+	getPlanModeSessionId,
+	readPlanModeState,
 	setPlanModeChoiceHandler,
 } from "./plan-mode-state.ts";
 import {
@@ -356,6 +359,10 @@ export class InteractiveMode {
 	private inPlanMode = false;
 	private planModeActiveToolNames: string[] = []; // tool set to restore on exit
 
+	// Ask mode: when true, the agent acts as a pure Q&A assistant with no
+	// file/bash/edit/write tools. State is in-memory only.
+	private inAskMode = isInAskMode();
+
 	// Auto-compaction state
 	private autoCompactionLoader: Loader | undefined = undefined;
 	private autoCompactionEscapeHandler?: () => void;
@@ -426,6 +433,17 @@ export class InteractiveMode {
 		this.options = options;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
+			// If the current session was in plan mode, restore its pre-plan-mode
+			// tool set before the session is torn down. Without this the
+			// session would be left with plan-mode tools active, which would
+			// propagate as a stale snapshot when the session is later reloaded.
+			if (this.inPlanMode && this.planModeActiveToolNames.length > 0) {
+				try {
+					this.session.setActiveToolsByName(this.planModeActiveToolNames);
+				} catch {
+					// Best-effort: the session may already be in a weird state.
+				}
+			}
 		});
 		this.runtimeHost.setRebindSession(async () => {
 			await this.rebindCurrentSession();
@@ -460,6 +478,9 @@ export class InteractiveMode {
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+		if (this.inAskMode) {
+			this.footer.setAskModeActive(true);
+		}
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -1699,6 +1720,10 @@ export class InteractiveMode {
 	private async rebindCurrentSession(): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
+		// Sync plan mode with the new session's persisted state BEFORE other
+		// UI setup, so the footer/tools reflect the correct mode on the first
+		// render after a session switch.
+		this.syncPlanModeWithSessionState();
 		// Restore the sidebar recent files from the current session before
 		// settings/extensions wire up, so the sidebar reflects persisted
 		// state on its first render.
@@ -1710,6 +1735,59 @@ export class InteractiveMode {
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
+		// Sync footer ask-mode indicator with module-level state (relevant when
+		// a new session is created while ask mode is active).
+		const askModeNow = isInAskMode();
+		if (askModeNow !== this.inAskMode) {
+			this.inAskMode = askModeNow;
+			this.footer.setAskModeActive(askModeNow);
+			this.ui.invalidate();
+		}
+	}
+
+	/**
+	 * Reconcile the in-memory plan-mode UI state with the new session's
+	 * persisted plan-mode state file. Called on every session replacement
+	 * so /resume of a previously-plan-mode session restores plan mode, and
+	 * /resume to a session that wasn't in plan mode clears any stale flag.
+	 *
+	 * The soft exit preserves the OUTGOING session's state file so that
+	 * /resume back to it still restores plan mode — the state file is
+	 * only removed on an explicit user-initiated exit (via /plan, popup
+	 * options 1/3/4, or session teardown).
+	 */
+	private syncPlanModeWithSessionState(): void {
+		const sessionId = this.sessionManager.getSessionId() ?? "";
+		const persisted = sessionId ? readPlanModeState(sessionId) : null;
+		if (persisted) {
+			if (!this.inPlanMode || getPlanModeSessionId() !== sessionId) {
+				// Either not in plan mode, or still pointing at the previous
+				// session's module state. Soft-exit (preserve that session's
+				// state file) and re-enter for the new session.
+				this.softExitPlanMode();
+				this.enterPlanModeInternal({ description: persisted.description });
+			}
+		} else if (this.inPlanMode) {
+			this.softExitPlanMode();
+		}
+	}
+
+	/**
+	 * Soft exit plan mode without removing the persisted state file and
+	 * without restoring the snapshotted tool set. Intended for session
+	 * switches: the OUTGOING session's state file must remain so /resume
+	 * back to it restores plan mode, and tool restoration is deferred to
+	 * beforeSessionInvalidate (which restores tools against the still-live
+	 * OLD session before teardown).
+	 */
+	private softExitPlanMode(): void {
+		if (!this.inPlanMode) return;
+		setPlanModeChoiceHandler(null);
+		exitPlanMode({ keepStateFile: true });
+		this.inPlanMode = false;
+		this.planModeActiveToolNames = [];
+		this.footer.setPlanModeActive(false);
+		this.ui.invalidate();
 	}
 
 	private async handleFatalRuntimeError(prefix: string, error: unknown): Promise<never> {
@@ -2559,6 +2637,7 @@ export class InteractiveMode {
 			this.ui.scrollDown(Math.max(5, Math.floor(this.ui.terminal.rows * 0.8))),
 		);
 		this.defaultEditor.onAction("app.plan.toggle", () => this.togglePlanMode());
+		this.defaultEditor.onAction("app.ask.toggle", () => this.toggleAskMode());
 		this.defaultEditor.onAction("app.recentFile.open.1", () => this.openRecentFile(1));
 		this.defaultEditor.onAction("app.recentFile.open.2", () => this.openRecentFile(2));
 		this.defaultEditor.onAction("app.recentFile.open.3", () => this.openRecentFile(3));
@@ -2726,6 +2805,11 @@ export class InteractiveMode {
 				}
 				const description = this.parsePlanArgs(text);
 				this.enterPlanModeInternal({ description });
+				return;
+			}
+			if (text === "/ask") {
+				this.editor.setText("");
+				this.toggleAskMode();
 				return;
 			}
 			if (text === "/quit") {
@@ -3748,6 +3832,9 @@ export class InteractiveMode {
 			this.showStatus("Cannot enter plan mode: no active session");
 			return;
 		}
+		if (this.inAskMode) {
+			this.exitAskModeInternal();
+		}
 		enterPlanMode({ sessionId, description: opts.description });
 		this.inPlanMode = true;
 		// Snapshot the current tool set so we can restore it on exit.
@@ -3783,18 +3870,54 @@ export class InteractiveMode {
 	}
 
 	/**
+	 * Toggle ask mode. When entering: disables all tools and switches the
+	 * system prompt to a Q&A assistant identity. When exiting: restores the
+	 * previous tool set and reverts the system prompt. Ask mode is mutually
+	 * exclusive with plan mode.
+	 */
+	private toggleAskMode(): void {
+		if (this.inAskMode) {
+			this.exitAskModeInternal();
+		} else {
+			this.enterAskModeInternal();
+		}
+	}
+
+	private enterAskModeInternal(): void {
+		if (this.inAskMode) return;
+		if (this.inPlanMode) {
+			this.exitPlanModeInternal();
+		}
+		this.session.setAskMode(true);
+		this.inAskMode = true;
+		this.showStatus("Ask mode: on");
+		this.footer.setAskModeActive(true);
+		this.ui.invalidate();
+	}
+
+	private exitAskModeInternal(): void {
+		if (!this.inAskMode) return;
+		this.session.setAskMode(false);
+		this.inAskMode = false;
+		this.showStatus("Ask mode: off");
+		this.footer.setAskModeActive(false);
+		this.ui.invalidate();
+	}
+
+	/**
 	 * Per-choice side effect for the plan-mode confirmation popup.
 	 * Called from the plan tool via the module-level choice handler.
 	 *
 	 *   1. 执行      — write the final plan to <cwd>/.pi/<slug>.md,
 	 *                    exit plan mode; model then implements it
 	 *   2. 继续完善  — stay in plan mode (no-op)
-	 *   3. 新 session — create a clean new session (no inherited planning
-	 *                    conversation) and inject the previous draft's path
-	 *                    into its system prompt so the model reads the plan
-	 *                    and executes it.
+	 *   3. 新 session — create a clean new session and immediately auto-execute
+	 *                    the plan from the draft
+	 *   4. 新 session · 队列 — create a clean new session with the plan queued,
+	 *                    but do NOT auto-execute; switch back and re-enter
+	 *                    plan mode in the original session
 	 */
-	private async handlePlanModeChoice(choice: 1 | 2 | 3): Promise<void> {
+	private async handlePlanModeChoice(choice: 1 | 2 | 3 | 4): Promise<void> {
 		if (!this.inPlanMode) return;
 		switch (choice) {
 			case 1: {
@@ -3838,7 +3961,7 @@ export class InteractiveMode {
 							const draftContent = await readFile(oldDraftPath, "utf-8");
 							draftTitle = derivePlanTitle(draftContent);
 							// Auto-name the new session from the plan title so `/resume`
-							// shows the relationship between plan and execution sessions.
+							// shows the relationship between plan and execute sessions.
 							if (draftTitle) {
 								const capped = draftTitle.length > 80 ? `${draftTitle.slice(0, 77)}...` : draftTitle;
 								this.session.sessionManager.appendSessionInfo(capped);
@@ -3865,6 +3988,86 @@ export class InteractiveMode {
 							);
 						}
 					}
+				} catch (error: unknown) {
+					await this.handleFatalRuntimeError("Failed to create session", error);
+				}
+				return;
+			}
+			case 4: {
+				// Queue the current plan into a clean new session (with the draft
+				// path injected via setExecutePlan) but do NOT auto-execute it.
+				// Switch back to the original session. Plan-mode state is now
+				// per-session (persisted via `~/.pi/draft/<sessionId>/.plan-mode-state.json`)
+				// and restored by the rebind sync, so we do not need to explicitly
+				// exit and re-enter plan mode here — the rebind handles it via
+				// the state file on the original session.
+				const draftRoot = getDraftRoot();
+				const oldDraftPath = draftRoot ? path.join(draftRoot, "draft.md") : undefined;
+				const hasDraft = oldDraftPath ? fs.existsSync(oldDraftPath) : false;
+				const parentSessionFile = this.sessionManager.getSessionFile();
+				if (!parentSessionFile) {
+					this.showStatus("Cannot queue plan: original session has no file");
+					return;
+				}
+				let queuedSessionFile: string | undefined;
+				try {
+					const result = await this.runtimeHost.newSession({
+						parentSession: parentSessionFile,
+						parentRelation: "plan",
+					});
+					if (result.cancelled) return;
+					this.renderCurrentSessionState();
+					queuedSessionFile = this.sessionManager.getSessionFile();
+					if (hasDraft && oldDraftPath) {
+						// Point the new session at the existing plan draft for execution.
+						// The "Executing Plan" system prompt section (paired with the
+						// user's `## Executing Plan` slot body) tells the model the plan
+						// path; sessionNote is no longer the right surface for plan guidance.
+						let draftTitle: string | undefined;
+						try {
+							const draftContent = await readFile(oldDraftPath, "utf-8");
+							draftTitle = derivePlanTitle(draftContent);
+							// Auto-name the new session from the plan title so `/resume`
+							// shows the relationship between plan and execute sessions.
+							if (draftTitle) {
+								const capped = draftTitle.length > 80 ? `${draftTitle.slice(0, 77)}...` : draftTitle;
+								this.session.sessionManager.appendSessionInfo(capped);
+							}
+						} catch {
+							// Best-effort: missing/unreadable draft, no H1, etc.
+							// Naming failure must not block the queued-session injection below.
+						}
+						this.session.setExecutePlan({ planPath: oldDraftPath, title: draftTitle });
+					}
+					// Force-flush the queued session to disk so it shows up in
+					// /resume and the session tree immediately. Without this,
+					// the file is created lazily on the first assistant message,
+					// which never arrives for a queued (non-executing) session.
+					this.session.sessionManager.flush();
+					// Switch back to the original planning session. The rebind
+					// sync will re-enter plan mode automatically because A's
+					// state file is preserved across the newSession call.
+					const switchResult = await this.runtimeHost.switchSession(parentSessionFile);
+					if (switchResult.cancelled) {
+						this.showStatus(
+							queuedSessionFile
+								? `Queued plan in ${queuedSessionFile} (could not return to original session)`
+								: "Created new session (could not return to original session)",
+						);
+						return;
+					}
+					this.renderCurrentSessionState();
+					// Surface a status that mentions the queued session so the
+					// user knows where to find it later. enterPlanModeInternal
+					// (called by the rebind sync) already showed its own status
+					// before this point; we override it with the extra info.
+					const newDraftRoot = getDraftRoot();
+					const newDraftPath = newDraftRoot ? path.join(newDraftRoot, "draft.md") : undefined;
+					this.showStatus(
+						queuedSessionFile
+							? `Plan mode: on — drafts to ${newDraftPath ?? "?"}; queued plan in ${queuedSessionFile}`
+							: `Plan mode: on — drafts to ${newDraftPath ?? "?"}`,
+					);
 				} catch (error: unknown) {
 					await this.handleFatalRuntimeError("Failed to create session", error);
 				}
@@ -4765,6 +4968,11 @@ export class InteractiveMode {
 			this.loadingAnimation = undefined;
 		}
 		this.statusContainer.clear();
+		// Plan mode state is persisted per-session (via
+		// `~/.pi/draft/<sessionId>/.plan-mode-state.json`) and restored on
+		// rebind by `syncPlanModeWithSessionState`. We deliberately do NOT
+		// exit plan mode here: the old session's plan-mode state must stay
+		// active so /resume back to it restores plan mode.
 		try {
 			const result = await this.runtimeHost.switchSession(sessionPath, {
 				withSession: options?.withSession,

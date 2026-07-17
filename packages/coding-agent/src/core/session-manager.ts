@@ -29,6 +29,14 @@ import {
 
 export const CURRENT_SESSION_VERSION = 3;
 
+/**
+ * How a session relates to its parent session (lineage edge type).
+ * The session tree view uses this to render distinct edge styles per kind.
+ * Extend this union — and the relation style table in session-selector —
+ * to add new kinds (e.g. "plan", "fork", ...).
+ */
+export type SessionParentRelation = "fork" | "plan";
+
 export interface SessionHeader {
 	type: "session";
 	version?: number; // v1 sessions don't have this
@@ -36,11 +44,13 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	parentRelation?: SessionParentRelation;
 }
 
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	parentRelation?: SessionParentRelation;
 }
 
 export interface SessionEntryBase {
@@ -176,6 +186,8 @@ export interface SessionInfo {
 	name?: string;
 	/** Path to the parent session (if this session was forked). */
 	parentSessionPath?: string;
+	/** How this session relates to its parent (fork/plan/...), if any. */
+	parentRelation?: SessionParentRelation;
 	created: Date;
 	modified: Date;
 	messageCount: number;
@@ -641,6 +653,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 
 		const cwd = typeof header.cwd === "string" ? header.cwd : "";
 		const parentSessionPath = header.parentSession;
+		const parentRelation = header.parentRelation;
 		const headerTime = typeof header.timestamp === "string" ? new Date(header.timestamp).getTime() : NaN;
 		const modified =
 			typeof lastActivityTime === "number" && lastActivityTime > 0
@@ -655,6 +668,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			cwd,
 			name,
 			parentSessionPath,
+			parentRelation,
 			created: new Date(header.timestamp),
 			modified,
 			messageCount,
@@ -834,6 +848,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: options?.parentSession,
+			parentRelation: options?.parentRelation,
 		};
 		this.fileEntries = [header];
 		this.byId.clear();
@@ -879,6 +894,25 @@ export class SessionManager {
 		} finally {
 			closeSync(fd);
 		}
+	}
+
+	/**
+	 * Force-write the current entries to disk now, regardless of whether
+	 * an assistant message has been appended. Normally the session file
+	 * is created lazily on the first assistant response; this bypasses
+	 * that deferral so callers (e.g. plan-mode choice 4 queueing a
+	 * deferred-execution session) can make a brand-new session visible
+	 * to /resume and the session tree immediately.
+	 *
+	 * Safe to call multiple times: rewrites with "w" mode truncate and
+	 * re-emit the current `fileEntries`. After this call, subsequent
+	 * `_persist()` invocations will correctly append.
+	 */
+	flush(): void {
+		if (!this.persist || !this.sessionFile) return;
+		if (this.fileEntries.length === 0) return;
+		this._rewriteFile();
+		this.flushed = true;
 	}
 
 	isPersisted(): boolean {
@@ -1305,6 +1339,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: this.persist ? previousSessionFile : undefined,
+			parentRelation: "fork",
 		};
 
 		// Collect labels for entries in the path
@@ -1471,6 +1506,7 @@ export class SessionManager {
 			timestamp,
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
+			parentRelation: "fork",
 		};
 		writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
 

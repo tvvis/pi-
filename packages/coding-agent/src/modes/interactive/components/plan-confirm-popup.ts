@@ -3,14 +3,15 @@
  *
  * Shown when the model calls `plan({ready: true})`. The plan draft is
  * rendered in the chat by the plan tool (see `pushChatMarkdown`) before
- * the popup opens, so the popup only needs to present the three
- * choices:
+ * the popup opens, so the popup only needs to present the choices:
  *
  *   1. 执行      — exit plan mode, write final plan, proceed
  *   2. 继续完善  — stay in plan mode, continue Q&A
- *   3. 新 session — clean new session, execute plan from draft
+ *   3. 新 session — clean new session, auto-execute plan from draft
+ *   4. 新 session · 队列 — queue plan in new session, no auto-execute;
+ *                    switch back and continue planning here
  *
- * The user navigates with ↑/↓ (or 1/2/3) and confirms with Enter. Esc
+ * The user navigates with ↑/↓ (or 1-4) and confirms with Enter. Esc
  * is treated as choice 2 (continue refining) so the plan is not lost.
  */
 
@@ -19,12 +20,13 @@ import chalk from "chalk";
 import { theme } from "../theme/theme.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
-export type PlanChoice = 1 | 2 | 3;
+export type PlanChoice = 1 | 2 | 3 | 4;
 
 const CHOICES: ReadonlyArray<{ key: PlanChoice; label: string; hint: string }> = [
 	{ key: 1, label: "执行", hint: "exit plan mode, write final, execute" },
 	{ key: 2, label: "继续完善", hint: "stay in plan mode, continue Q&A" },
-	{ key: 3, label: "新 session", hint: "clean session, execute plan from draft" },
+	{ key: 3, label: "新 session", hint: "clean session, auto-execute plan from draft" },
+	{ key: 4, label: "新 session · 队列", hint: "queue plan in new session; continue planning here" },
 ];
 
 export interface PlanConfirmPopupOptions {
@@ -56,7 +58,7 @@ export class PlanConfirmPopup extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(
 			new Text(
-				rawKeyHint("1-3", "quick") +
+				rawKeyHint("1-4", "quick") +
 					"  " +
 					rawKeyHint("↑↓", "navigate") +
 					"  " +
@@ -97,7 +99,7 @@ export class PlanConfirmPopup extends Container implements Focusable {
 			return;
 		}
 
-		if (/^[1-3]$/.test(keyData)) {
+		if (/^[1-4]$/.test(keyData)) {
 			const idx = Number.parseInt(keyData, 10) - 1;
 			const choice = CHOICES[idx];
 			if (choice) this.submit(choice.key);

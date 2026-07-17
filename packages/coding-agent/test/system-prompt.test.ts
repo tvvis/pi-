@@ -387,6 +387,66 @@ describe("buildSystemPrompt executePlan", () => {
 	});
 });
 
+describe("buildSystemPrompt ask mode", () => {
+	test("uses Q&A identity and omits coding assistant identity", () => {
+		const prompt = buildSystemPrompt({
+			askMode: true,
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+		});
+
+		expect(prompt).toContain("Q&A assistant");
+		expect(prompt).not.toContain("expert coding assistant");
+		expect(prompt).not.toContain("Pi documentation");
+	});
+
+	test("lists available tools when snippets are provided", () => {
+		const prompt = buildSystemPrompt({
+			askMode: true,
+			selectedTools: ["dynamic_tool"],
+			toolSnippets: {
+				dynamic_tool: "Run dynamic behavior",
+			},
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+		});
+
+		expect(prompt).toContain("- dynamic_tool: Run dynamic behavior");
+	});
+
+	test("includes ask-mode guidelines", () => {
+		const prompt = buildSystemPrompt({
+			askMode: true,
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+		});
+
+		expect(prompt).toContain("- Be concise in your responses");
+		expect(prompt).toContain("- Answer based on your existing knowledge");
+		expect(prompt).toContain("- Do not guess; say so if you do not know");
+	});
+
+	test("omits plan and execute-plan sections", () => {
+		const prompt = buildSystemPrompt({
+			askMode: true,
+			selectedTools: [],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			planMode: { draftRoot: "/tmp/draft" },
+			executePlan: { planPath: "/tmp/.pi/x.md" },
+		});
+
+		expect(prompt).not.toContain("## Plan Mode");
+		expect(prompt).not.toContain("## Executing Plan");
+	});
+});
+
 describe("buildSystemPrompt customPrompts", () => {
 	test("does not insert slots when both keys are undefined", () => {
 		const prompt = buildSystemPrompt({

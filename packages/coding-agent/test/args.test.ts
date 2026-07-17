@@ -60,6 +60,14 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--ask flag", () => {
+		test("parses --ask flag", () => {
+			const result = parseArgs(["--ask", "What is the capital of France?"]);
+			expect(result.ask).toBe(true);
+			expect(result.messages).toEqual(["What is the capital of France?"]);
+		});
+	});
+
 	describe("--continue flag", () => {
 		test("parses --continue flag", () => {
 			const result = parseArgs(["--continue"]);

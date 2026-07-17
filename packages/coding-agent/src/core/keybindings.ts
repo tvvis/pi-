@@ -27,6 +27,7 @@ export interface AppKeybindings {
 	"app.viewport.scrollUp": true;
 	"app.viewport.scrollDown": true;
 	"app.plan.toggle": true;
+	"app.ask.toggle": true;
 	"app.recentFile.open.1": true;
 	"app.recentFile.open.2": true;
 	"app.recentFile.open.3": true;
@@ -109,6 +110,7 @@ export const KEYBINDINGS = {
 	"app.viewport.scrollUp": { defaultKeys: "pageUp", description: "Scroll chat history up" },
 	"app.viewport.scrollDown": { defaultKeys: "pageDown", description: "Scroll chat history down" },
 	"app.plan.toggle": { defaultKeys: "alt+o", description: "Toggle plan mode" },
+	"app.ask.toggle": { defaultKeys: "alt+a", description: "Toggle ask mode" },
 	"app.recentFile.open.1": { defaultKeys: "alt+1", description: "Open 1st recent file in editor" },
 	"app.recentFile.open.2": { defaultKeys: "alt+2", description: "Open 2nd recent file in editor" },
 	"app.recentFile.open.3": { defaultKeys: "alt+3", description: "Open 3rd recent file in editor" },

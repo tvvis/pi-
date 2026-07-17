@@ -49,6 +49,7 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
 	private planModeActive = false;
+	private askModeActive = false;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
 
@@ -68,6 +69,11 @@ export class FooterComponent implements Component {
 	setPlanModeActive(active: boolean): void {
 		if (this.planModeActive === active) return;
 		this.planModeActive = active;
+	}
+
+	setAskModeActive(active: boolean): void {
+		if (this.askModeActive === active) return;
+		this.askModeActive = active;
 	}
 
 	/**
@@ -242,6 +248,9 @@ export class FooterComponent implements Component {
 		const statusSegments: string[] = [];
 		if (this.planModeActive) {
 			statusSegments.push(theme.fg("accent", "◧ plan"));
+		}
+		if (this.askModeActive) {
+			statusSegments.push(theme.fg("accent", "◧ ask"));
 		}
 		if (extensionStatuses.size > 0) {
 			const sortedStatuses = Array.from(extensionStatuses.entries())

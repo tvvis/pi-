@@ -20,6 +20,7 @@ export interface Args {
 	provider?: string;
 	model?: string;
 	apiKey?: string;
+	ask?: boolean;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	thinking?: CanonicalThinkingLevel;
@@ -94,6 +95,8 @@ export function parseArgs(args: string[]): Args {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
 			result.model = args[++i];
+		} else if (arg === "--ask") {
+			result.ask = true;
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {
@@ -239,6 +242,7 @@ ${chalk.bold("Commands:")}
 ${chalk.bold("Options:")}
   --provider <name>              Provider name
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
+  --ask                          Ask mode: pure Q&A, no read/write tools
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
@@ -324,6 +328,9 @@ ${chalk.bold("Examples:")}
 
   # Read-only mode (no file modifications possible)
   pi --tools read,grep,find,ls -p "Review the code in src/"
+
+  # Ask mode (pure Q&A, no tools)
+  pi --ask "What is the capital of France?"
 
   # Disable one tool while keeping the rest available
   pi --exclude-tools ask_question

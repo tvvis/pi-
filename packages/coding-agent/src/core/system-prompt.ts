@@ -15,6 +15,11 @@ export interface BuildSystemPromptOptions {
 	customPrompt?: string;
 	/** Tools to include in prompt. Default: [read, bash, edit, write] */
 	selectedTools?: string[];
+	/**
+	 * Ask mode context. When true, the system prompt is replaced with a Q&A
+	 * assistant identity and no file/bash/edit/write tools are advertised.
+	 */
+	askMode?: boolean;
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
 	/** Additional guideline bullets appended to the default system prompt guidelines. */
@@ -60,6 +65,10 @@ export interface BuildSystemPromptOptions {
 	customPrompts?: PromptSlotMap;
 }
 
+/** Base identity for ask mode (Q&A assistant, no project mutation). */
+export const ASK_MODE_SYSTEM_PROMPT =
+	"You are a helpful Q&A assistant. Answer the user's questions clearly and concisely using your existing knowledge and reasoning.";
+
 /** Build the system prompt with tools, guidelines, and context */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const {
@@ -74,6 +83,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		planMode,
 		executePlan,
 		customPrompts,
+		askMode,
 	} = options;
 	const resolvedCwd = cwd;
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -119,11 +129,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		return prompt;
 	}
 
-	// Get absolute paths to documentation and examples
-	const readmePath = getReadmePath();
-	const docsPath = getDocsPath();
-	const examplesPath = getExamplesPath();
-
 	// Build tools list based on selected tools.
 	// A tool appears in Available tools only when the caller provides a one-line snippet.
 	const tools = selectedTools || ["read", "bash", "edit", "write"];
@@ -160,13 +165,36 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 	}
 
-	// Always include these
-	addGuideline("Be concise in your responses");
-	addGuideline("Show file paths clearly when working with files");
+	let prompt: string;
 
-	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
+	if (askMode) {
+		// Always include these
+		addGuideline("Be concise in your responses");
+		addGuideline("Answer based on your existing knowledge");
+		addGuideline("Do not guess; say so if you do not know");
 
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+		const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
+
+		prompt = `${ASK_MODE_SYSTEM_PROMPT}
+
+Available tools:
+${toolsList}
+
+Guidelines:
+${guidelines}`;
+	} else {
+		// Get absolute paths to documentation and examples
+		const readmePath = getReadmePath();
+		const docsPath = getDocsPath();
+		const examplesPath = getExamplesPath();
+
+		// Always include these
+		addGuideline("Be concise in your responses");
+		addGuideline("Show file paths clearly when working with files");
+
+		const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
+
+		prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
 Available tools:
 ${toolsList}
@@ -184,6 +212,7 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 - When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
 - When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
 - Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+	}
 
 	if (appendSection) {
 		prompt += appendSection;
@@ -208,7 +237,7 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 	prompt += `\nCurrent date: ${date}`;
 	prompt += `\nCurrent working directory: ${promptCwd}`;
 
-	if (planMode) {
+	if (planMode && !askMode) {
 		prompt += `\n\n## Plan Mode\n\nYou are in plan mode. You must NOT modify any project files.\n\n`;
 		prompt += `Available tools:\n`;
 		prompt += `- read, grep, find, ls: read project files\n`;
@@ -226,7 +255,7 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		}
 	}
 
-	if (executePlan) {
+	if (executePlan && !askMode) {
 		prompt += `\n\n## Executing Plan\n\n`;
 		prompt += `An approved plan is at \`${executePlan.planPath}\`. `;
 		if (executePlan.title) {

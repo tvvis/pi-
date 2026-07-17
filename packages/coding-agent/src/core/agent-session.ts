@@ -43,6 +43,7 @@ import {
 	withThinkingLevelOverrides,
 } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
+import { enterAskMode, exitAskMode, isInAskMode } from "../modes/interactive/ask-mode-state.ts";
 import { getDraftRoot, getPlanModeState } from "../modes/interactive/plan-mode-state.ts";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
@@ -341,6 +342,7 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _sessionNote: string | undefined = undefined;
 	private _executePlan: { planPath: string; title?: string } | undefined = undefined;
+	private _askModeActiveToolNames: string[] = [];
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -367,6 +369,14 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+
+		// If ask mode is already active (e.g., session created while --ask is in
+		// effect), snapshot the current tool set and disable tools immediately.
+		if (isInAskMode()) {
+			this._askModeActiveToolNames = this.getActiveToolNames().slice();
+			this.agent.state.tools = [];
+			this._refreshBaseSystemPrompt();
+		}
 	}
 
 	/** Model registry for API key resolution and model discovery */
@@ -422,6 +432,10 @@ export class AgentSession {
 	 */
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+			if (isInAskMode()) {
+				throw new Error(`Ask mode: the ${toolCall.name} tool is not available.`);
+			}
+
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
 				return undefined;
@@ -865,6 +879,28 @@ export class AgentSession {
 	}
 
 	/**
+	 * Toggle ask mode for this session. When enabled: snapshots the current
+	 * active tool set, disables all tools, and switches the system prompt to a
+	 * Q&A assistant identity. When disabled: restores the snapshot tool set and
+	 * reverts the system prompt. Ask mode is mutually exclusive with plan mode;
+	 * callers should exit plan mode before entering ask mode.
+	 */
+	setAskMode(enabled: boolean): void {
+		if (enabled === isInAskMode()) return;
+
+		if (enabled) {
+			this._askModeActiveToolNames = this.getActiveToolNames().slice();
+			enterAskMode();
+			this.agent.state.tools = [];
+			this._refreshBaseSystemPrompt();
+		} else {
+			exitAskMode();
+			this.setActiveToolsByName(this._askModeActiveToolNames);
+			this._askModeActiveToolNames = [];
+		}
+	}
+
+	/**
 	 * Rebuild the base system prompt (against the current model) and push it
 	 * into agent state. Use whenever model, tools, or model-conditional
 	 * settings may have changed.
@@ -1031,6 +1067,7 @@ export class AgentSession {
 			planMode: this._buildPlanModeContext(),
 			executePlan: this._buildExecutePlanContext(),
 			customPrompts: this._buildCustomPromptsContext(),
+			askMode: isInAskMode(),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
@@ -2582,6 +2619,13 @@ export class AgentSession {
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
+
+		// If ask mode is active, _buildRuntime may have re-enabled tools. Keep
+		// them disabled without overwriting the snapshot used on exit.
+		if (isInAskMode()) {
+			this.agent.state.tools = [];
+			this._refreshBaseSystemPrompt();
+		}
 
 		const hasBindings =
 			this._extensionUIContext ||

@@ -4162,7 +4162,23 @@ export class InteractiveMode {
 			this.showStatus(`No ${index}${ordinalSuffix(index)} recent file`);
 			return;
 		}
+		const ext = path.extname(file.absPath).toLowerCase();
+		if (ext === ".html" || ext === ".htm") {
+			this.openFileInBrowser(file.absPath);
+			return;
+		}
 		this.openFileInEditor(file.absPath);
+	}
+
+	private openFileInBrowser(filePath: string): void {
+		const cwd = this.sessionManager.getCwd();
+		const abs = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+		if (!fs.existsSync(abs)) {
+			this.showWarning(`File not found: ${abs}`);
+			return;
+		}
+		this.openInChrome(abs);
+		this.showStatus(`Opening in browser: ${abs}`);
 	}
 
 	private openFileInEditor(filePath: string): void {
@@ -4281,6 +4297,42 @@ export class InteractiveMode {
 			this.showStatus(`Opening project folder: ${cwd}`);
 		} catch {
 			this.showStatus(`Failed to open file explorer: ${command}`);
+		}
+	}
+
+	/**
+	 * Open a file path in Google Chrome. Used by alt+1..9 when the recent
+	 * file is HTML. WSL defers to `explorer.exe` with a `wslpath`-converted
+	 * path: that hands the file to the Windows file association, which is
+	 * the user's default browser (Chrome for Chrome users). `chrome.exe`
+	 * itself is rarely on the WSL PATH, so we don't try it first.
+	 */
+	private openInChrome(filePath: string): void {
+		let command: string;
+		let args: string[];
+
+		if (process.platform === "win32") {
+			command = "chrome";
+			args = [filePath];
+		} else if (isWslEnvironment()) {
+			command = "explorer.exe";
+			args = [toWindowsPath(filePath)];
+		} else if (process.platform === "darwin") {
+			command = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+			args = [filePath];
+		} else {
+			command = "google-chrome";
+			args = [filePath];
+		}
+
+		try {
+			const child = spawn(command, args, { detached: true, stdio: "ignore" });
+			child.on("error", () => {
+				this.showStatus(`Failed to open Chrome: ${command}`);
+			});
+			child.unref();
+		} catch {
+			this.showStatus(`Failed to open Chrome: ${command}`);
 		}
 	}
 

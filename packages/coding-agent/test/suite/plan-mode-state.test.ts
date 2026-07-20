@@ -10,6 +10,7 @@ import { join, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	derivePlanSlug,
+	derivePlanTitle,
 	enterPlanMode,
 	exitPlanMode,
 	getDraftRoot,
@@ -173,5 +174,35 @@ describe("derivePlanSlug", () => {
 	it("does not match `## ` (H2) as an H1", () => {
 		const slug = derivePlanSlug("## H2 heading\n");
 		expect(slug).toMatch(/^plan-\d+$/);
+	});
+});
+
+describe("derivePlanTitle", () => {
+	it("extracts the title from `# Plan: <Title>`", () => {
+		expect(derivePlanTitle("# Plan: Add rate limiting\n\nbody")).toBe("Add rate limiting");
+	});
+
+	it("extracts the title from `# Plan - <Title>` and `# Plan — <Title>`", () => {
+		expect(derivePlanTitle("# Plan - Fix Login Bug")).toBe("Fix Login Bug");
+		expect(derivePlanTitle("# Plan — Ship feature")).toBe("Ship feature");
+	});
+
+	it("extracts the heading text when no `Plan:` prefix is present", () => {
+		expect(derivePlanTitle("# Refactor the auth flow")).toBe("Refactor the auth flow");
+	});
+
+	it("returns `undefined` when there is no H1", () => {
+		expect(derivePlanTitle("no headings here\njust body text")).toBeUndefined();
+		expect(derivePlanTitle("## H2 heading\n")).toBeUndefined();
+	});
+
+	it("returns `undefined` for an empty plan or whitespace-only H1", () => {
+		expect(derivePlanTitle("")).toBeUndefined();
+		expect(derivePlanTitle("# \n")).toBeUndefined();
+	});
+
+	it("preserves case, punctuation and unicode in the title", () => {
+		expect(derivePlanTitle("# Plan: Add User's Auth!!! (v2)")).toBe("Add User's Auth!!! (v2)");
+		expect(derivePlanTitle("# Plan: 中文标题")).toBe("中文标题");
 	});
 });

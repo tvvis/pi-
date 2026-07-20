@@ -279,7 +279,14 @@ describe("session selector path/delete interactions", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("Parent");
-		expect(output).toContain("└─ Child");
+		// Default fold: Parent has a child so its subtree is collapsed and
+		// the child is hidden until the user expands it.
+		expect(output).not.toContain("Child");
+
+		// Expanding the selected (Parent) node reveals the child.
+		selector.getSessionList().handleInput("\x1b[C");
+		const expanded = stripAnsi(selector.render(120).join("\n"));
+		expect(expanded).toContain("└─ Child");
 	});
 
 	it("treats the current session as active across symlink aliases", async () => {

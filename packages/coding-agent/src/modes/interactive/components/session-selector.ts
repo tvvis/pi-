@@ -14,7 +14,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
-import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
+import type { SessionInfo, SessionListProgress, SessionParentRelation } from "../../../core/session-manager.ts";
 import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -173,6 +173,7 @@ class SessionSelectorHeader implements Component {
 				keyHint("app.session.toggleNamedFilter", "named"),
 				keyHint("app.session.delete", "delete"),
 				keyHint("app.session.togglePath", `path ${pathState}`),
+				theme.fg("muted", `${keyText("tui.editor.cursorLeft")}/${keyText("tui.editor.cursorRight")} fold`),
 			];
 			if (this.showRenameHint) {
 				hint2Parts.push(keyHint("app.session.rename", "rename"));
@@ -199,6 +200,10 @@ interface FlatSessionNode {
 	isLast: boolean;
 	/** For each ancestor level, whether there are more siblings after it */
 	ancestorContinues: boolean[];
+	/** Whether this session has any children (for fold marker) */
+	hasChildren: boolean;
+	/** Whether this node's subtree is currently collapsed */
+	isFolded: boolean;
 }
 
 /**
@@ -241,12 +246,26 @@ function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
 
 /**
  * Flatten tree into display list with tree structure metadata.
+ * `foldedPaths` (canonicalized session paths) hides the entire subtree of
+ * matching nodes. Used for the default-collapsed session tree.
  */
-function flattenSessionTree(roots: SessionTreeNode[]): FlatSessionNode[] {
+function flattenSessionTree(roots: SessionTreeNode[], foldedPaths?: Set<string>): FlatSessionNode[] {
 	const result: FlatSessionNode[] = [];
+	const folded = foldedPaths ?? new Set<string>();
 
 	const walk = (node: SessionTreeNode, depth: number, ancestorContinues: boolean[], isLast: boolean): void => {
-		result.push({ session: node.session, depth, isLast, ancestorContinues });
+		const nodePath = canonicalizePath(node.session.path) ?? node.session.path;
+		const hasChildren = node.children.length > 0;
+		result.push({
+			session: node.session,
+			depth,
+			isLast,
+			ancestorContinues,
+			hasChildren,
+			isFolded: folded.has(nodePath),
+		});
+
+		if (folded.has(nodePath)) return; // subtree collapsed
 
 		for (let i = 0; i < node.children.length; i++) {
 			const childIsLast = i === node.children.length - 1;
@@ -282,6 +301,14 @@ class SessionList implements Component, Focusable {
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
 	private currentSessionCanonicalPath?: string;
+	/** Canonicalized session paths whose subtrees are collapsed. */
+	private foldedPaths: Set<string> = new Set();
+	/** Whether the default fold state has been seeded for the current session set. */
+	private foldStateInitialized = false;
+	/** Canonical path → SessionInfo, rebuilt each filter pass for ancestor lookups. */
+	private sessionByPath: Map<string, SessionInfo> = new Map();
+	/** Nodes auto-expanded by cursor movement (folded again once the cursor leaves their subtree). */
+	private autoExpanded: Set<string> = new Set();
 	public onSelect?: (sessionPath: string) => void;
 	public onCancel?: () => void;
 	public onExit: () => void = () => {};
@@ -347,6 +374,7 @@ class SessionList implements Component, Focusable {
 	setSessions(sessions: SessionInfo[], showCwd: boolean): void {
 		this.allSessions = sessions;
 		this.showCwd = showCwd;
+		this.foldStateInitialized = false;
 		this.filterSessions(this.searchInput.getValue());
 	}
 
@@ -355,10 +383,18 @@ class SessionList implements Component, Focusable {
 		const nameFiltered =
 			this.nameFilter === "all" ? this.allSessions : this.allSessions.filter((session) => hasSessionName(session));
 
+		// Rebuild path lookup for ancestor traversal (cursor-driven fold/expand).
+		this.sessionByPath = new Map();
+		for (const session of nameFiltered) {
+			const p = canonicalizePath(session.path) ?? session.path;
+			this.sessionByPath.set(p, session);
+		}
+
 		if (this.sortMode === "threaded" && !trimmed) {
 			// Threaded mode without search: show tree structure
 			const roots = buildSessionTree(nameFiltered);
-			this.filteredSessions = flattenSessionTree(roots);
+			this.seedDefaultFoldState(roots);
+			this.filteredSessions = flattenSessionTree(roots, this.foldedPaths);
 		} else {
 			// Other modes or with search: flat list
 			const filtered = filterAndSortSessions(nameFiltered, query, this.sortMode, "all");
@@ -367,9 +403,99 @@ class SessionList implements Component, Focusable {
 				depth: 0,
 				isLast: true,
 				ancestorContinues: [],
+				hasChildren: false,
+				isFolded: false,
 			}));
 		}
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredSessions.length - 1));
+	}
+
+	/**
+	 * Seed the initial fold state once per session set: collapse every node
+	 * that has children, except the ancestors of the current session (so the
+	 * user can still see where they are). Subsequent folds are user-driven.
+	 */
+	private seedDefaultFoldState(roots: SessionTreeNode[]): void {
+		if (this.foldStateInitialized) return;
+		this.foldStateInitialized = true;
+		this.foldedPaths = new Set();
+
+		// Collect the canonical path of the current session and its ancestors.
+		const visibleAncestors = new Set<string>();
+		if (this.currentSessionCanonicalPath) {
+			const byPath = new Map<string, SessionTreeNode>();
+			const collect = (node: SessionTreeNode): void => {
+				const p = canonicalizePath(node.session.path) ?? node.session.path;
+				byPath.set(p, node);
+				for (const child of node.children) collect(child);
+			};
+			for (const root of roots) collect(root);
+
+			let current = byPath.get(this.currentSessionCanonicalPath);
+			while (current) {
+				const p = canonicalizePath(current.session.path) ?? current.session.path;
+				visibleAncestors.add(p);
+				const parentPath = canonicalizePath(current.session.parentSessionPath);
+				current = parentPath ? byPath.get(parentPath) : undefined;
+			}
+		}
+
+		// Fold every node with children, except current-session ancestors.
+		const walk = (node: SessionTreeNode): void => {
+			if (node.children.length > 0) {
+				const p = canonicalizePath(node.session.path) ?? node.session.path;
+				if (!visibleAncestors.has(p)) {
+					this.foldedPaths.add(p);
+				}
+			}
+			for (const child of node.children) walk(child);
+		};
+		for (const root of roots) walk(root);
+	}
+
+	/**
+	 * Cursor-driven fold/expand: reveal the selected node's direct children,
+	 * and re-fold any node that was auto-expanded but is no longer on the
+	 * selected node's ancestor path (the cursor left its subtree).
+	 */
+	private expandSelected(): void {
+		const selected = this.filteredSessions[this.selectedIndex];
+		if (!selected) return;
+		const selectedPath = canonicalizePath(selected.session.path) ?? selected.session.path;
+
+		// Compute the ancestor set of the newly selected node (its lineage).
+		const ancestorSet = new Set<string>();
+		let current = this.sessionByPath.get(selectedPath);
+		while (current?.parentSessionPath) {
+			const p = canonicalizePath(current.parentSessionPath);
+			if (!p || !this.sessionByPath.has(p)) break;
+			ancestorSet.add(p);
+			current = this.sessionByPath.get(p);
+		}
+
+		// Re-fold auto-expanded nodes the cursor has left.
+		let changed = false;
+		for (const path of this.autoExpanded) {
+			if (path !== selectedPath && !ancestorSet.has(path) && !this.foldedPaths.has(path)) {
+				this.foldedPaths.add(path);
+				changed = true;
+			}
+		}
+		this.autoExpanded = new Set([...this.autoExpanded].filter((p) => p === selectedPath || ancestorSet.has(p)));
+
+		// Expand the selected node's subtree.
+		if (selected.hasChildren && this.foldedPaths.has(selectedPath)) {
+			this.foldedPaths.delete(selectedPath);
+			this.autoExpanded.add(selectedPath);
+			changed = true;
+		} else if (selected.hasChildren && !this.foldedPaths.has(selectedPath)) {
+			// Already open (manual expand): track it so it folds when the cursor leaves.
+			this.autoExpanded.add(selectedPath);
+		}
+
+		if (changed) {
+			this.filterSessions(this.searchInput.getValue());
+		}
 	}
 
 	private setConfirmingDeletePath(path: string | null): void {
@@ -441,6 +567,7 @@ class SessionList implements Component, Focusable {
 
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
+			const relationTag = this.buildRelationTag(node.session.parentRelation);
 
 			// Session display text (name or first message)
 			const hasName = !!session.name;
@@ -462,7 +589,7 @@ class SessionList implements Component, Focusable {
 			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
 
 			// Calculate available width for message
-			const prefixWidth = visibleWidth(prefix);
+			const prefixWidth = visibleWidth(prefix) + visibleWidth(relationTag);
 			const rightWidth = visibleWidth(rightPart) + 2; // +2 for spacing
 			const availableForMsg = width - 2 - prefixWidth - rightWidth; // -2 for cursor
 
@@ -483,7 +610,7 @@ class SessionList implements Component, Focusable {
 			}
 
 			// Build line
-			const leftPart = cursor + theme.fg("dim", prefix) + styledMsg;
+			const leftPart = cursor + theme.fg("dim", prefix) + relationTag + styledMsg;
 			const leftWidth = visibleWidth(leftPart);
 			const spacing = Math.max(1, width - leftWidth - visibleWidth(rightPart));
 			const styledRight = theme.fg(isConfirmingDelete ? "error" : "dim", rightPart);
@@ -507,14 +634,32 @@ class SessionList implements Component, Focusable {
 
 	private buildTreePrefix(node: FlatSessionNode): string {
 		if (node.depth === 0) {
+			// Root node: show a fold marker when it has a collapsed subtree.
+			if (node.hasChildren && node.isFolded) return theme.fg("muted", "▸ ");
 			return "";
 		}
 
-		const parts = node.ancestorContinues.map((continues) => (continues ? "│  " : "   "));
-		const branch = node.isLast ? "└─ " : "├─ ";
-		return parts.join("") + branch;
+		// Skip the root-level gutter so each depth adds exactly 2 cells:
+		// 2 cells gutter per ancestor level ("│ " / "  "). Branch adds
+		// its own 2 cells (corner + fold marker) + 1 space for readability.
+		const parts = node.ancestorContinues.slice(1).map((continues) => (continues ? "│ " : "  "));
+		const branch = node.isLast ? "└" : "├";
+		const fold = node.hasChildren && node.isFolded ? "▸" : "─";
+		return `${parts.join("")}${branch}${fold} `;
 	}
 
+	/** Lineage edge label rendered after the tree connector, before the message. */
+	private buildRelationTag(relation: SessionParentRelation | undefined): string {
+		if (!relation) return "";
+		switch (relation) {
+			case "fork":
+				return theme.fg("accent", "⎇ ");
+			case "plan":
+				return theme.fg("warning", "✦ ");
+			default:
+				return "";
+		}
+	}
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
 
@@ -586,21 +731,50 @@ class SessionList implements Component, Focusable {
 			return;
 		}
 
+		// Up/down/page navigation also auto-expands the selected node's subtree
+		// (default-collapsed tree: selecting a node reveals its children).
+		// Left/Right collapse/expand; only active in the threaded tree view.
+		const treeViewActive = this.sortMode === "threaded" && !this.searchInput.getValue();
+
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+			this.expandSelected();
 		}
 		// Down arrow
 		else if (kb.matches(keyData, "tui.select.down")) {
 			this.selectedIndex = Math.min(this.filteredSessions.length - 1, this.selectedIndex + 1);
+			this.expandSelected();
 		}
 		// Page up - jump up by maxVisible items
 		else if (kb.matches(keyData, "tui.select.pageUp")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - this.maxVisible);
+			this.expandSelected();
 		}
 		// Page down - jump down by maxVisible items
 		else if (kb.matches(keyData, "tui.select.pageDown")) {
 			this.selectedIndex = Math.min(this.filteredSessions.length - 1, this.selectedIndex + this.maxVisible);
+			this.expandSelected();
+		}
+		// Left/Right: collapse/expand tree nodes. Only active in the threaded
+		// tree view (no search query); with a query the keys go to the search box.
+		// Left: collapse selected node (if it has children and is expanded)
+		else if (treeViewActive && kb.matches(keyData, "tui.editor.cursorLeft")) {
+			const selected = this.filteredSessions[this.selectedIndex];
+			if (selected?.hasChildren === true && !selected.isFolded) {
+				const path = canonicalizePath(selected.session.path) ?? selected.session.path;
+				this.foldedPaths.add(path);
+				this.filterSessions(this.searchInput.getValue());
+			}
+		}
+		// Right: expand selected node (if it has children and is collapsed)
+		else if (treeViewActive && kb.matches(keyData, "tui.editor.cursorRight")) {
+			const selected = this.filteredSessions[this.selectedIndex];
+			if (selected?.hasChildren === true && selected.isFolded) {
+				const path = canonicalizePath(selected.session.path) ?? selected.session.path;
+				this.foldedPaths.delete(path);
+				this.filterSessions(this.searchInput.getValue());
+			}
 		}
 		// Enter
 		else if (kb.matches(keyData, "tui.select.confirm")) {

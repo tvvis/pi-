@@ -7,7 +7,7 @@ import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } 
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
-import { SessionManager } from "./session-manager.ts";
+import { SessionManager, type SessionParentRelation } from "./session-manager.ts";
 
 /**
  * Result returned by runtime creation.
@@ -211,6 +211,7 @@ export class AgentSessionRuntime {
 
 	async newSession(options?: {
 		parentSession?: string;
+		parentRelation?: SessionParentRelation;
 		setup?: (sessionManager: SessionManager) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}): Promise<{ cancelled: boolean }> {
@@ -223,7 +224,7 @@ export class AgentSessionRuntime {
 		const sessionDir = this.session.sessionManager.getSessionDir();
 		const sessionManager = SessionManager.create(this.cwd, sessionDir);
 		if (options?.parentSession) {
-			sessionManager.newSession({ parentSession: options.parentSession });
+			sessionManager.newSession({ parentSession: options.parentSession, parentRelation: options.parentRelation });
 		}
 
 		await this.teardownCurrent("new", sessionManager.getSessionFile());
@@ -279,7 +280,7 @@ export class AgentSessionRuntime {
 			const sessionDir = this.session.sessionManager.getSessionDir();
 			if (!targetLeafId) {
 				const sessionManager = SessionManager.create(this.cwd, sessionDir);
-				sessionManager.newSession({ parentSession: currentSessionFile });
+				sessionManager.newSession({ parentSession: currentSessionFile, parentRelation: "fork" });
 				await this.teardownCurrent("fork", sessionManager.getSessionFile());
 				this.apply(
 					await this.createRuntime({
@@ -313,7 +314,7 @@ export class AgentSessionRuntime {
 
 		const sessionManager = this.session.sessionManager;
 		if (!targetLeafId) {
-			sessionManager.newSession({ parentSession: this.session.sessionFile });
+			sessionManager.newSession({ parentSession: this.session.sessionFile, parentRelation: "fork" });
 		} else {
 			sessionManager.createBranchedSession(targetLeafId);
 		}

@@ -1,23 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-AUTH_FILE="$HOME/.pi/agent/auth.json"
-AUTH_BACKUP="$HOME/.pi/agent/auth.json.bak"
-
-# Restore auth.json on exit (success or failure)
-cleanup() {
-    if [[ -f "$AUTH_BACKUP" ]]; then
-        mv "$AUTH_BACKUP" "$AUTH_FILE"
-        echo "Restored auth.json"
-    fi
-}
-trap cleanup EXIT
-
-# Move auth.json out of the way
-if [[ -f "$AUTH_FILE" ]]; then
-    mv "$AUTH_FILE" "$AUTH_BACKUP"
-    echo "Moved auth.json to backup"
-fi
+# NOTE: this script intentionally does NOT touch $HOME/.pi/agent/auth.json.
+# Earlier versions moved it aside and restored on exit, which could lose data
+# if the script was interrupted (trap skipped) and the leftover .bak was
+# mis-handled. Run the test suite with credentials intact and rely on
+# environment-based auth gating instead.
 
 # Skip local LLM tests (ollama, lmstudio)
 export PI_NO_LOCAL_LLM=1

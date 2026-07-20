@@ -1080,6 +1080,48 @@ models.push({
 			}
 		}
 
+		// Process Alibaba Token Plan (China)
+		// `alibaba-token-plan-cn` is a multi-tenant OpenAI-compatible endpoint in
+		// cn-beijing (https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1)
+		// that serves a curated set of third-party models (Qwen, DeepSeek, Kimi, GLM, etc.).
+		// Env: ALIBABA_TOKEN_PLAN_API_KEY.
+		//
+		// The endpoint only accepts the legacy `system` role (no `developer`), the
+		// legacy `max_tokens` field (no `max_completion_tokens`), and does not
+		// support `store`, `reasoning_effort`, or strict tool schemas.
+		const alibabaTokenPlanCnCompat: OpenAICompletionsCompat = {
+			supportsStore: false,
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: false,
+			maxTokensField: "max_tokens",
+			supportsStrictMode: false,
+		};
+		if (data["alibaba-token-plan-cn"]?.models) {
+			for (const [modelId, model] of Object.entries(data["alibaba-token-plan-cn"].models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "alibaba-token-plan-cn",
+					baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+					compat: alibabaTokenPlanCnCompat,
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+				});
+			}
+		}
+
 		console.log(`Loaded ${models.length} tool-capable models from models.dev`);
 		return models;
 	} catch (error) {

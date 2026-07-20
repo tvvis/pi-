@@ -9,17 +9,31 @@
  *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
  *   - Chain: { chain: [{ agent: "name", task: "... {previous} ..." }, ...] }
  *
+ * Each mode accepts an optional `model` field. Model resolution priority
+ * (highest first):
+ *   1. Per-item model in parallel/chain
+ *   2. Call-site model
+ *   3. Agent frontmatter `model:`
+ *   4. Parent's `~/.pi/agent/settings.json` (`defaultProvider`/`defaultModel`)
+ *   5. pi's built-in default (no `--model` flag)
+ *
  * Uses JSON mode to capture structured output from subagents.
  */
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getMarkdownTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	getAgentDir,
+	getMarkdownTheme,
+	withFileMutationQueue,
+} from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
@@ -28,6 +42,30 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
+
+/**
+ * Resolve the parent's default model from `settings.json` (project overrides global).
+ * Returns `undefined` when neither file is readable or `defaultModel` is unset.
+ */
+function resolveDefaultModelFromSettings(cwd: string): string | undefined {
+	const candidates = [path.join(getAgentDir(), "settings.json"), path.join(cwd, ".pi", "settings.json")];
+	for (const filePath of candidates) {
+		if (!existsSync(filePath)) continue;
+		try {
+			const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as {
+				defaultProvider?: unknown;
+				defaultModel?: unknown;
+			};
+			const model = typeof parsed.defaultModel === "string" ? parsed.defaultModel.trim() : "";
+			if (!model) continue;
+			const provider = typeof parsed.defaultProvider === "string" ? parsed.defaultProvider.trim() : "";
+			return provider ? `${provider}/${model}` : model;
+		} catch {
+			// Try the next candidate.
+		}
+	}
+	return undefined;
+}
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -268,6 +306,8 @@ async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	overrideModel: string | undefined,
+	defaultModel: string | undefined,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -286,7 +326,8 @@ async function runSingleAgent(
 	}
 
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (agent.model) args.push("--model", agent.model);
+	const resolvedModel = overrideModel ?? agent.model ?? defaultModel;
+	if (resolvedModel) args.push("--model", resolvedModel);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
@@ -300,7 +341,7 @@ async function runSingleAgent(
 		messages: [],
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: agent.model,
+		model: resolvedModel,
 		step,
 	};
 
@@ -426,12 +467,14 @@ const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	model: Type.Optional(Type.String({ description: "Model override for this task (e.g. provider/model-id)" })),
 });
 
 const ChainItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	model: Type.Optional(Type.String({ description: "Model override for this step" })),
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -449,6 +492,12 @@ const SubagentParams = Type.Object({
 		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
+	model: Type.Optional(
+		Type.String({
+			description:
+				"Model override (e.g. 'provider/model-id'). Falls back to the call-site, then the agent frontmatter, then settings.json defaultModel, then pi's built-in default.",
+		}),
+	),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -460,6 +509,7 @@ export default function (pi: ExtensionAPI) {
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
 			'Default agent scope is "user" (from ~/.pi/agent/agents).',
 			'To enable project-local agents in .pi/agents, set agentScope: "both" (or "project").',
+			"Model resolution (highest first): per-item model in parallel/chain, call-site `model`, agent frontmatter `model`, then settings.json defaultProvider/defaultModel, then pi's built-in default.",
 		].join(" "),
 		parameters: SubagentParams,
 
@@ -468,6 +518,7 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
+			const defaultModelFromSettings = resolveDefaultModelFromSettings(ctx.cwd);
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -554,6 +605,8 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
+						step.model ?? params.model,
+						defaultModelFromSettings,
 					);
 					results.push(result);
 
@@ -632,6 +685,8 @@ export default function (pi: ExtensionAPI) {
 							}
 						},
 						makeDetails("parallel"),
+						t.model ?? params.model,
+						defaultModelFromSettings,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -668,6 +723,8 @@ export default function (pi: ExtensionAPI) {
 					signal,
 					onUpdate,
 					makeDetails("single"),
+					params.model,
+					defaultModelFromSettings,
 				);
 				const isError = isFailedResult(result);
 				if (isError) {

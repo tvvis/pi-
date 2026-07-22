@@ -15,6 +15,7 @@ import {
 	type ImageContent,
 	type Message,
 	type Model,
+	modelsAreEqual,
 } from "@earendil-works/pi-ai";
 import type {
 	AutocompleteItem,
@@ -61,6 +62,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
+import { TRUNCATED_RESPONSE_HINT } from "../../core/hints.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
@@ -3018,6 +3020,9 @@ export class InteractiveMode {
 							component.setArgsComplete();
 						}
 					}
+					if (this.streamingMessage.stopReason === "length") {
+						this.showWarning(TRUNCATED_RESPONSE_HINT);
+					}
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 					this.footer.invalidate();
@@ -3917,6 +3922,26 @@ export class InteractiveMode {
 	 *                    but do NOT auto-execute; switch back and re-enter
 	 *                    plan mode in the original session
 	 */
+	/**
+	 * Carry the planning session's model into a freshly-created execution/
+	 * queued session. `newSession` re-derives the model from CLI flags plus the
+	 * persisted default, which can differ from the model the user actually
+	 * selected while planning (e.g. `--model` combined with a mid-session
+	 * `/model` switch, or scoped-model cycling). Re-apply the planning model so
+	 * the new session keeps working with the same model the plan was drafted
+	 * with. Best-effort: if the model is no longer authed in the new session,
+	 * fall back to whatever `newSession` selected.
+	 */
+	private async carryOverPlanModel(planModel: Model<any> | undefined): Promise<void> {
+		if (!planModel) return;
+		if (modelsAreEqual(this.session.model, planModel)) return;
+		try {
+			await this.session.setModel(planModel);
+		} catch {
+			// Best-effort: keep whatever model newSession selected.
+		}
+	}
+
 	private async handlePlanModeChoice(choice: 1 | 2 | 3 | 4): Promise<void> {
 		if (!this.inPlanMode) return;
 		switch (choice) {
@@ -3943,6 +3968,9 @@ export class InteractiveMode {
 				const oldDraftPath = draftRoot ? path.join(draftRoot, "draft.md") : undefined;
 				const hasDraft = oldDraftPath ? fs.existsSync(oldDraftPath) : false;
 				const parentSessionFile = this.sessionManager.getSessionFile();
+				// Capture the planning session's model before the rebind so the new
+				// execution session inherits it instead of the re-derived default.
+				const planModel = this.session.model;
 				this.exitPlanModeInternal("execute");
 				try {
 					const result = await this.runtimeHost.newSession({
@@ -3951,6 +3979,7 @@ export class InteractiveMode {
 					});
 					if (result.cancelled) return;
 					this.renderCurrentSessionState();
+					await this.carryOverPlanModel(planModel);
 					if (hasDraft && oldDraftPath) {
 						// Point the new session at the existing plan draft for execution.
 						// The "Executing Plan" system prompt section (paired with the user's
@@ -4018,6 +4047,9 @@ export class InteractiveMode {
 					this.showStatus("Cannot queue plan: original session has no file");
 					return;
 				}
+				// Capture the planning session's model before the rebind so the queued
+				// session inherits it instead of the re-derived default.
+				const planModel = this.session.model;
 				let queuedSessionFile: string | undefined;
 				try {
 					const result = await this.runtimeHost.newSession({
@@ -4026,6 +4058,7 @@ export class InteractiveMode {
 					});
 					if (result.cancelled) return;
 					this.renderCurrentSessionState();
+					await this.carryOverPlanModel(planModel);
 					queuedSessionFile = this.sessionManager.getSessionFile();
 					if (hasDraft && oldDraftPath) {
 						// Point the new session at the existing plan draft for execution.

@@ -16,6 +16,7 @@ function createFakeThis() {
 		inPlanMode: true as boolean,
 		exitPlanModeInternal: vi.fn(),
 		enterPlanModeInternal: vi.fn(),
+		carryOverPlanModel: vi.fn().mockResolvedValue(undefined),
 		runtimeHost: {
 			newSession: vi.fn().mockResolvedValue({ cancelled: false }),
 			switchSession: vi.fn().mockResolvedValue({ cancelled: false }),
@@ -28,6 +29,7 @@ function createFakeThis() {
 			setExecutePlan: vi.fn(),
 			prompt: vi.fn().mockResolvedValue(undefined),
 			sessionManager: { appendSessionInfo: vi.fn() },
+			model: { provider: "faux", id: "plan-model" },
 		},
 		showStatus: vi.fn(),
 		showError: vi.fn(),
@@ -77,6 +79,10 @@ describe("InteractiveMode plan-mode choice 3 (new session + auto-execute)", () =
 		});
 		// The execution turn is kicked off automatically.
 		expect(fakeThis.session.prompt).toHaveBeenCalledTimes(1);
+		// The planning session's model is carried into the new session instead
+		// of the re-derived default (captured before the rebind).
+		expect(fakeThis.carryOverPlanModel).toHaveBeenCalledTimes(1);
+		expect(fakeThis.carryOverPlanModel).toHaveBeenCalledWith({ provider: "faux", id: "plan-model" });
 		const promptText = fakeThis.session.prompt.mock.calls[0]![0] as string;
 		expect(promptText).toContain(expectedDraftPath);
 		// New session is auto-named from the plan H1 title for /resume traceability.

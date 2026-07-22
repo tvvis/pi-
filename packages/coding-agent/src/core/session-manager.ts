@@ -32,10 +32,10 @@ export const CURRENT_SESSION_VERSION = 3;
 /**
  * How a session relates to its parent session (lineage edge type).
  * The session tree view uses this to render distinct edge styles per kind.
- * Extend this union — and the relation style table in session-selector —
+ * Extend this union - and the relation style table in session-selector -
  * to add new kinds (e.g. "plan", "fork", ...).
  */
-export type SessionParentRelation = "fork" | "plan";
+export type SessionParentRelation = "fork" | "plan" | "subagent";
 
 export interface SessionHeader {
 	type: "session";
@@ -74,6 +74,19 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	provider: string;
 	modelId: string;
+}
+
+/**
+ * Execute-plan marker. Records that this session is executing an approved plan
+ * at `planPath`. The last such entry on the active branch is restored as the
+ * session's execute-plan context (the `## Executing Plan` system prompt
+ * section) on resume/rebind. An empty `planPath` clears a previously set plan.
+ */
+export interface ExecutePlanEntry extends SessionEntryBase {
+	type: "execute_plan";
+	/** Absolute path of the plan to execute, or empty string to clear. */
+	planPath: string;
+	title?: string;
 }
 
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
@@ -151,6 +164,7 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
+	| ExecutePlanEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| CustomEntry
@@ -175,6 +189,8 @@ export interface SessionContext {
 	messages: AgentMessage[];
 	thinkingLevel: string;
 	model: { provider: string; modelId: string } | null;
+	/** Restored execute-plan context (last `execute_plan` entry on the active branch), or undefined. */
+	executePlan?: { planPath: string; title?: string };
 }
 
 export interface SessionInfo {
@@ -351,7 +367,7 @@ export function buildSessionContext(
 	let leaf: SessionEntry | undefined;
 	if (leafId === null) {
 		// Explicitly null - return no messages (navigated to before first entry)
-		return { messages: [], thinkingLevel: "off", model: null };
+		return { messages: [], thinkingLevel: "off", model: null, executePlan: undefined };
 	}
 	if (leafId) {
 		leaf = byId.get(leafId);
@@ -362,7 +378,7 @@ export function buildSessionContext(
 	}
 
 	if (!leaf) {
-		return { messages: [], thinkingLevel: "off", model: null };
+		return { messages: [], thinkingLevel: "off", model: null, executePlan: undefined };
 	}
 
 	// Walk from leaf to root, collecting path
@@ -376,6 +392,7 @@ export function buildSessionContext(
 	// Extract settings and find compaction
 	let thinkingLevel = "off";
 	let model: { provider: string; modelId: string } | null = null;
+	let executePlan: { planPath: string; title?: string } | undefined;
 	let compaction: CompactionEntry | null = null;
 
 	for (const entry of path) {
@@ -383,6 +400,8 @@ export function buildSessionContext(
 			thinkingLevel = entry.thinkingLevel;
 		} else if (entry.type === "model_change") {
 			model = { provider: entry.provider, modelId: entry.modelId };
+		} else if (entry.type === "execute_plan") {
+			executePlan = entry.planPath ? { planPath: entry.planPath, title: entry.title } : undefined;
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			model = { provider: entry.message.provider, modelId: entry.message.model };
 		} else if (entry.type === "compaction") {
@@ -440,7 +459,7 @@ export function buildSessionContext(
 		}
 	}
 
-	return { messages, thinkingLevel, model };
+	return { messages, thinkingLevel, model, executePlan };
 }
 
 /**
@@ -1015,6 +1034,24 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			provider,
 			modelId,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/**
+	 * Append an execute-plan marker as child of current leaf, then advance leaf.
+	 * Pass `undefined` planPath to record a clear (overrides a prior set on this
+	 * branch). Returns entry id.
+	 */
+	appendExecutePlan(planPath: string | undefined, title?: string): string {
+		const entry: ExecutePlanEntry = {
+			type: "execute_plan",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			planPath: planPath ?? "",
+			title,
 		};
 		this._appendEntry(entry);
 		return entry.id;

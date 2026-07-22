@@ -34,6 +34,7 @@ function createFakeThis() {
 		statusContainer: { clear: vi.fn() },
 		exitPlanModeInternal: vi.fn(),
 		enterPlanModeInternal: vi.fn(),
+		carryOverPlanModel: vi.fn().mockResolvedValue(undefined),
 		runtimeHost: {
 			newSession,
 			switchSession: vi.fn().mockResolvedValue({ cancelled: false }),
@@ -46,6 +47,7 @@ function createFakeThis() {
 			setExecutePlan: vi.fn(),
 			prompt: vi.fn().mockResolvedValue(undefined),
 			sessionManager: { appendSessionInfo: vi.fn(), flush: vi.fn() },
+			model: { provider: "faux", id: "plan-model" },
 		},
 		showStatus: vi.fn(),
 		showError: vi.fn(),
@@ -132,6 +134,10 @@ describe("InteractiveMode plan-mode choice 4 (queue + continue planning)", () =>
 		// Crucially: NO auto-prompt. The queued session is not executed
 		// automatically; the user resumes it later via /resume.
 		expect(fakeThis.session.prompt).not.toHaveBeenCalled();
+		// The planning session's model is carried into the queued session
+		// instead of the re-derived default (captured before the rebind).
+		expect(fakeThis.carryOverPlanModel).toHaveBeenCalledTimes(1);
+		expect(fakeThis.carryOverPlanModel).toHaveBeenCalledWith({ provider: "faux", id: "plan-model" });
 		// Force-flush the queued session so it appears in /resume and the
 		// session tree immediately, instead of waiting for the (never
 		// arriving) first assistant message.

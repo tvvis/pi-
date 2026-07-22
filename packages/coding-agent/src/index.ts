@@ -197,6 +197,7 @@ export {
 	CURRENT_SESSION_VERSION,
 	type CustomEntry,
 	type CustomMessageEntry,
+	type ExecutePlanEntry,
 	type FileEntry,
 	getLatestCompactionEntry,
 	type ModelChangeEntry,

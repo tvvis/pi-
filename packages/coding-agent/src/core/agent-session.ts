@@ -867,9 +867,17 @@ export class AgentSession {
 	 * `planPath`; the user's `## Executing Plan` slot body (from the
 	 * prompts file) is layered on top. Pass `undefined` to clear. Mutually
 	 * exclusive with plan mode (the UI flow keeps them from overlapping).
+	 *
+	 * The context is persisted to the session file as an `execute_plan` entry
+	 * so it survives `/resume` and session rebinds (e.g. a queued execution
+	 * session created by plan-mode option 4). Pass `{ persist: false }` when
+	 * restoring from the session file to avoid appending a duplicate entry.
 	 */
-	setExecutePlan(ctx: { planPath: string; title?: string } | undefined): void {
+	setExecutePlan(ctx: { planPath: string; title?: string } | undefined, options: { persist?: boolean } = {}): void {
 		this._executePlan = ctx;
+		if (options.persist !== false) {
+			this.sessionManager.appendExecutePlan(ctx?.planPath, ctx?.title);
+		}
 		this._refreshBaseSystemPrompt();
 	}
 

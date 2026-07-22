@@ -303,7 +303,8 @@ class TreeList implements Component {
 				entry.type === "custom" ||
 				entry.type === "model_change" ||
 				entry.type === "thinking_level_change" ||
-				entry.type === "session_info";
+				entry.type === "session_info" ||
+				entry.type === "execute_plan";
 
 			switch (this.filterMode) {
 				case "user-only":
@@ -542,6 +543,9 @@ class TreeList implements Component {
 				break;
 			case "model_change":
 				parts.push("model", entry.modelId);
+				break;
+			case "execute_plan":
+				parts.push("execute plan", entry.planPath);
 				break;
 			case "thinking_level_change":
 				parts.push("thinking", entry.thinkingLevel);

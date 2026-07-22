@@ -444,6 +444,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 	});
+	// Restore execute-plan context from the session file (last `execute_plan`
+	// entry on the active branch) so a queued/resumed execution session keeps
+	// its `## Executing Plan` system-prompt section. `persist: false` avoids
+	// re-appending a duplicate entry on top of the one being restored from.
+	if (hasExistingSession && existingSession.executePlan) {
+		session.setExecutePlan(existingSession.executePlan, { persist: false });
+	}
 	const extensionsResult = resourceLoader.getExtensions();
 
 	return {

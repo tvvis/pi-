@@ -3,6 +3,7 @@ import {
 	type BranchSummaryEntry,
 	buildSessionContext,
 	type CompactionEntry,
+	type ExecutePlanEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -58,6 +59,10 @@ function thinkingLevel(id: string, parentId: string | null, level: string): Thin
 
 function modelChange(id: string, parentId: string | null, provider: string, modelId: string): ModelChangeEntry {
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
+}
+
+function executePlan(id: string, parentId: string | null, planPath: string, title?: string): ExecutePlanEntry {
+	return { type: "execute_plan", id, parentId, timestamp: "2025-01-01T00:00:00Z", planPath, title };
 }
 
 describe("buildSessionContext", () => {
@@ -245,6 +250,64 @@ describe("buildSessionContext", () => {
 			expect((ctxBranch.messages[2] as any).content).toBe("q2");
 			expect((ctxBranch.messages[3] as any).summary).toContain("Tried wrong approach");
 			expect((ctxBranch.messages[4] as any).content).toBe("better approach");
+		});
+	});
+
+	describe("execute-plan context", () => {
+		it("is undefined when no execute_plan entry is on the path", () => {
+			const entries: SessionEntry[] = [msg("1", null, "user", "hello"), msg("2", "1", "assistant", "hi")];
+			const ctx = buildSessionContext(entries);
+			expect(ctx.executePlan).toBeUndefined();
+		});
+
+		it("restores executePlan from the last execute_plan entry on the path", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "start"),
+				executePlan("2", "1", "/abs/draft.md", "My Plan"),
+				msg("3", "2", "user", "go"),
+			];
+			const ctx = buildSessionContext(entries);
+			expect(ctx.executePlan).toEqual({ planPath: "/abs/draft.md", title: "My Plan" });
+		});
+
+		it("uses the latest execute_plan entry when multiple are on the path", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "start"),
+				executePlan("2", "1", "/abs/first.md", "First"),
+				msg("3", "2", "user", "go"),
+				executePlan("4", "3", "/abs/second.md", "Second"),
+			];
+			const ctx = buildSessionContext(entries);
+			expect(ctx.executePlan).toEqual({ planPath: "/abs/second.md", title: "Second" });
+		});
+
+		it("clears executePlan when the last entry has an empty planPath", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "start"),
+				executePlan("2", "1", "/abs/draft.md", "My Plan"),
+				executePlan("3", "2", ""),
+			];
+			const ctx = buildSessionContext(entries);
+			expect(ctx.executePlan).toBeUndefined();
+		});
+
+		it("keeps executePlan only for the active branch", () => {
+			//   1 -> 2(execute_plan A) -> 3 (branch A)
+			//         \-> 4 (branch B, no execute_plan)
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "start"),
+				executePlan("2", "1", "/abs/a.md", "A"),
+				msg("3", "2", "user", "branch A"),
+				msg("4", "2", "user", "branch B"),
+			];
+			const ctxA = buildSessionContext(entries, "3");
+			expect(ctxA.executePlan).toEqual({ planPath: "/abs/a.md", title: "A" });
+			const ctxB = buildSessionContext(entries, "4");
+			expect(ctxB.executePlan).toEqual({ planPath: "/abs/a.md", title: "A" });
+			// A branched clear on branch B must not affect branch A.
+			const cleared = [...entries, executePlan("5", "4", "")];
+			expect(buildSessionContext(cleared, "5").executePlan).toBeUndefined();
+			expect(buildSessionContext(cleared, "3").executePlan).toEqual({ planPath: "/abs/a.md", title: "A" });
 		});
 	});
 

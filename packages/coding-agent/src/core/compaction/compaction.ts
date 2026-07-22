@@ -319,6 +319,7 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 			}
 			case "thinking_level_change":
 			case "model_change":
+			case "execute_plan":
 			case "compaction":
 			case "branch_summary":
 			case "custom":

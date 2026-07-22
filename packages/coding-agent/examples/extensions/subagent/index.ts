@@ -180,7 +180,7 @@ interface UsageStats {
 
 interface SingleResult {
 	agent: string;
-	agentSource: "user" | "project" | "unknown";
+	agentSource: "user" | "project" | "unknown" | "generic";
 	task: string;
 	exitCode: number;
 	messages: Message[];
@@ -296,22 +296,117 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
-async function runSingleAgent(
-	defaultCwd: string,
-	agents: AgentConfig[],
-	agentName: string,
-	task: string,
-	cwd: string | undefined,
-	step: number | undefined,
-	signal: AbortSignal | undefined,
-	onUpdate: OnUpdateCallback | undefined,
-	makeDetails: (results: SingleResult[]) => SubagentDetails,
-	overrideModel: string | undefined,
-	defaultModel: string | undefined,
-): Promise<SingleResult> {
-	const agent = agents.find((a) => a.name === agentName);
+/**
+ * Build the display name for a subagent child session:
+ * `subagent:<agent> - <task>` with the task whitespace-normalized and capped
+ * at 40 chars (no ellipsis, to keep the name short).
+ */
+export function buildSubagentSessionName(agent: string, task: string): string {
+	return `subagent:${agent} - ${task.replace(/\s+/g, " ").trim().slice(0, 40)}`;
+}
 
-	if (!agent) {
+export interface SubagentArgsOptions {
+	agentName: string;
+	task: string;
+	resolvedModel: string | undefined;
+	tools: string[] | undefined;
+	parentSessionFile: string | undefined;
+	noSkills: boolean;
+	skills: string[] | undefined;
+	systemPrompt: string | undefined;
+	appendSystemPrompt: string[] | undefined;
+}
+
+/**
+ * Construct the CLI args for a subagent child process. The child persists its
+ * own session (no `--no-session`) and, when a parent session file is known,
+ * links back to it via `--parent-session`/`--parent-relation subagent` so the
+ * `/resume` tree can group it under the parent. The parent controls the child's
+ * skills (`--skill`/`--no-skills`) and context (`--system-prompt`/
+ * `--append-system-prompt`).
+ */
+export function buildSubagentArgs(options: SubagentArgsOptions): string[] {
+	const args: string[] = ["--mode", "json", "-p"];
+	if (options.resolvedModel) args.push("--model", options.resolvedModel);
+	if (options.tools && options.tools.length > 0) args.push("--tools", options.tools.join(","));
+	if (options.noSkills) args.push("--no-skills");
+	if (options.skills) {
+		for (const skill of options.skills) args.push("--skill", skill);
+	}
+	if (options.systemPrompt) args.push("--system-prompt", options.systemPrompt);
+	if (options.appendSystemPrompt) {
+		for (const part of options.appendSystemPrompt) args.push("--append-system-prompt", part);
+	}
+	if (options.parentSessionFile) {
+		args.push("--parent-session", options.parentSessionFile, "--parent-relation", "subagent");
+	}
+	args.push("--name", buildSubagentSessionName(options.agentName, options.task));
+	return args;
+}
+
+/**
+ * Parent-controlled configuration for a subagent child. Values are merged
+ * item-level > top-level before being passed to `runSingleAgent`.
+ */
+interface SubagentConfig {
+	model: string | undefined;
+	tools: string[] | undefined;
+	systemPrompt: string | undefined;
+	appendSystemPrompt: string[] | undefined;
+	skills: string[] | undefined;
+	noSkills: boolean;
+	label: string | undefined;
+}
+
+type SubagentConfigOverride = Partial<SubagentConfig>;
+
+function mergeSubagentConfig(parent: SubagentConfig, item: SubagentConfigOverride): SubagentConfig {
+	return {
+		model: item.model ?? parent.model,
+		tools: item.tools ?? parent.tools,
+		systemPrompt: item.systemPrompt ?? parent.systemPrompt,
+		appendSystemPrompt: item.appendSystemPrompt ?? parent.appendSystemPrompt,
+		skills: item.skills ?? parent.skills,
+		noSkills: item.noSkills ?? parent.noSkills,
+		label: item.label ?? parent.label,
+	};
+}
+
+interface RunSingleAgentOptions {
+	defaultCwd: string;
+	agents: AgentConfig[];
+	/** Named agent preset to load; `undefined` runs a generic subagent. */
+	agentName: string | undefined;
+	task: string;
+	cwd: string | undefined;
+	step: number | undefined;
+	signal: AbortSignal | undefined;
+	onUpdate: OnUpdateCallback | undefined;
+	makeDetails: (results: SingleResult[]) => SubagentDetails;
+	/** Parent-controlled config, already merged item-level > top-level. */
+	config: SubagentConfig;
+	defaultModel: string | undefined;
+	parentSessionFile: string | undefined;
+}
+
+async function runSingleAgent(opts: RunSingleAgentOptions): Promise<SingleResult> {
+	const {
+		defaultCwd,
+		agents,
+		agentName,
+		task,
+		cwd,
+		step,
+		signal,
+		onUpdate,
+		makeDetails,
+		config,
+		defaultModel,
+		parentSessionFile,
+	} = opts;
+	const agent = agentName ? agents.find((a) => a.name === agentName) : undefined;
+
+	if (agentName && !agent) {
 		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
 		return {
 			agent: agentName,
@@ -325,17 +420,29 @@ async function runSingleAgent(
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	const resolvedModel = overrideModel ?? agent.model ?? defaultModel;
-	if (resolvedModel) args.push("--model", resolvedModel);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	const displayName = agent ? agent.name : (config.label ?? "subagent");
+	const agentSource = agent ? agent.source : "generic";
+	const resolvedModel = config.model ?? agent?.model ?? defaultModel;
+	const effectiveTools = config.tools ?? agent?.tools;
+
+	const args = buildSubagentArgs({
+		agentName: displayName,
+		task,
+		resolvedModel,
+		tools: effectiveTools,
+		parentSessionFile,
+		noSkills: config.noSkills,
+		skills: config.skills,
+		systemPrompt: config.systemPrompt,
+		appendSystemPrompt: config.appendSystemPrompt,
+	});
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
 
 	const currentResult: SingleResult = {
-		agent: agentName,
-		agentSource: agent.source,
+		agent: displayName,
+		agentSource,
 		task,
 		exitCode: 0,
 		messages: [],
@@ -355,7 +462,7 @@ async function runSingleAgent(
 	};
 
 	try {
-		if (agent.systemPrompt.trim()) {
+		if (agent?.systemPrompt.trim()) {
 			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
@@ -464,17 +571,37 @@ async function runSingleAgent(
 }
 
 const TaskItem = Type.Object({
-	agent: Type.String({ description: "Name of the agent to invoke" }),
+	agent: Type.Optional(Type.String({ description: "Named agent preset to invoke; omit for a generic subagent" })),
 	task: Type.String({ description: "Task to delegate to the agent" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 	model: Type.Optional(Type.String({ description: "Model override for this task (e.g. provider/model-id)" })),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Tool allowlist override for this task (--tools)" })),
+	systemPrompt: Type.Optional(Type.String({ description: "System prompt override for this task (--system-prompt)" })),
+	appendSystemPrompt: Type.Optional(
+		Type.Array(Type.String(), {
+			description: "Context appended to the system prompt for this task (text or file path)",
+		}),
+	),
+	skills: Type.Optional(Type.Array(Type.String(), { description: "Skill paths to load for this task (--skill)" })),
+	noSkills: Type.Optional(Type.Boolean({ description: "Disable skills for this task (--no-skills)" })),
+	label: Type.Optional(Type.String({ description: "Short label for a generic subagent (used in session name)" })),
 });
 
 const ChainItem = Type.Object({
-	agent: Type.String({ description: "Name of the agent to invoke" }),
+	agent: Type.Optional(Type.String({ description: "Named agent preset to invoke; omit for a generic subagent" })),
 	task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 	model: Type.Optional(Type.String({ description: "Model override for this step" })),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Tool allowlist override for this step (--tools)" })),
+	systemPrompt: Type.Optional(Type.String({ description: "System prompt override for this step (--system-prompt)" })),
+	appendSystemPrompt: Type.Optional(
+		Type.Array(Type.String(), {
+			description: "Context appended to the system prompt for this step (text or file path)",
+		}),
+	),
+	skills: Type.Optional(Type.Array(Type.String(), { description: "Skill paths to load for this step (--skill)" })),
+	noSkills: Type.Optional(Type.Boolean({ description: "Disable skills for this step (--no-skills)" })),
+	label: Type.Optional(Type.String({ description: "Short label for a generic subagent (used in session name)" })),
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -483,7 +610,9 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 });
 
 const SubagentParams = Type.Object({
-	agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
+	agent: Type.Optional(
+		Type.String({ description: "Named agent preset to invoke (single mode); omit for a generic subagent" }),
+	),
 	task: Type.Optional(Type.String({ description: "Task to delegate (for single mode)" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
 	chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
@@ -498,6 +627,25 @@ const SubagentParams = Type.Object({
 				"Model override (e.g. 'provider/model-id'). Falls back to the call-site, then the agent frontmatter, then settings.json defaultModel, then pi's built-in default.",
 		}),
 	),
+	tools: Type.Optional(
+		Type.Array(Type.String(), { description: "Tool allowlist for the child (--tools). Overrides agent tools." }),
+	),
+	systemPrompt: Type.Optional(Type.String({ description: "Override the child's system prompt (--system-prompt)." })),
+	appendSystemPrompt: Type.Optional(
+		Type.Array(Type.String(), { description: "Context appended to the child's system prompt (text or file path)." }),
+	),
+	skills: Type.Optional(Type.Array(Type.String(), { description: "Skill paths to load in the child (--skill)." })),
+	noSkills: Type.Optional(
+		Type.Boolean({
+			description: "Disable skills discovery/loading in the child process (passes --no-skills). Default: false.",
+			default: false,
+		}),
+	),
+	label: Type.Optional(
+		Type.String({
+			description: "Short label for a generic subagent, used in the session name. Default: 'subagent'.",
+		}),
+	),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -505,11 +653,11 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent",
 		label: "Subagent",
 		description: [
-			"Delegate tasks to specialized subagents with isolated context.",
-			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
-			'Default agent scope is "user" (from ~/.pi/agent/agents).',
-			'To enable project-local agents in .pi/agents, set agentScope: "both" (or "project").',
-			"Model resolution (highest first): per-item model in parallel/chain, call-site `model`, agent frontmatter `model`, then settings.json defaultProvider/defaultModel, then pi's built-in default.",
+			"Delegate tasks to subagents with isolated context. Each subagent is a generic pi process: omit `agent` to run a generic subagent, or pass a named agent preset.",
+			"The parent controls the child's skills (`skills`/`noSkills`), context (`systemPrompt`/`appendSystemPrompt`), tools, and model; per-item overrides apply in parallel/chain.",
+			"Modes: single (task), parallel (tasks array), chain (sequential with {previous} placeholder).",
+			'Named agent presets are discovered from ~/.pi/agent/agents (default scope "user"); set agentScope: "both" (or "project") to include .pi/agents.',
+			"Model resolution (highest first): per-item model, call-site `model`, agent frontmatter `model`, then settings.json defaultProvider/defaultModel, then pi's built-in default.",
 		].join(" "),
 		parameters: SubagentParams,
 
@@ -519,10 +667,23 @@ export default function (pi: ExtensionAPI) {
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
 			const defaultModelFromSettings = resolveDefaultModelFromSettings(ctx.cwd);
+			// Parent session file (undefined when the parent runs with --no-session).
+			// Each child session links back to this same parent so /resume groups them.
+			const parentSessionFile = ctx.sessionManager.getSessionFile();
+			// Top-level parent-controlled config; each item may override these.
+			const baseConfig: SubagentConfig = {
+				model: params.model,
+				tools: params.tools,
+				systemPrompt: params.systemPrompt,
+				appendSystemPrompt: params.appendSystemPrompt,
+				skills: params.skills,
+				noSkills: params.noSkills ?? false,
+				label: params.label,
+			};
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
-			const hasSingle = Boolean(params.agent && params.task);
+			const hasSingle = params.task !== undefined;
 			const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
 
 			const makeDetails =
@@ -549,8 +710,8 @@ export default function (pi: ExtensionAPI) {
 
 			if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
 				const requestedAgentNames = new Set<string>();
-				if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
-				if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
+				if (params.chain) for (const step of params.chain) if (step.agent) requestedAgentNames.add(step.agent);
+				if (params.tasks) for (const t of params.tasks) if (t.agent) requestedAgentNames.add(t.agent);
 				if (params.agent) requestedAgentNames.add(params.agent);
 
 				const projectAgentsRequested = Array.from(requestedAgentNames)
@@ -595,26 +756,27 @@ export default function (pi: ExtensionAPI) {
 							}
 						: undefined;
 
-					const result = await runSingleAgent(
-						ctx.cwd,
+					const result = await runSingleAgent({
+						defaultCwd: ctx.cwd,
 						agents,
-						step.agent,
-						taskWithContext,
-						step.cwd,
-						i + 1,
+						agentName: step.agent,
+						task: taskWithContext,
+						cwd: step.cwd,
+						step: i + 1,
 						signal,
-						chainUpdate,
-						makeDetails("chain"),
-						step.model ?? params.model,
-						defaultModelFromSettings,
-					);
+						onUpdate: chainUpdate,
+						makeDetails: makeDetails("chain"),
+						config: mergeSubagentConfig(baseConfig, step),
+						defaultModel: defaultModelFromSettings,
+						parentSessionFile,
+					});
 					results.push(result);
 
 					const isError = isFailedResult(result);
 					if (isError) {
 						const errorMsg = getResultOutput(result);
 						return {
-							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` }],
+							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${result.agent}): ${errorMsg}` }],
 							details: makeDetails("chain")(results),
 							isError: true,
 						};
@@ -645,7 +807,7 @@ export default function (pi: ExtensionAPI) {
 				// Initialize placeholder results
 				for (let i = 0; i < params.tasks.length; i++) {
 					allResults[i] = {
-						agent: params.tasks[i].agent,
+						agent: params.tasks[i].agent ?? params.tasks[i].label ?? "subagent",
 						agentSource: "unknown",
 						task: params.tasks[i].task,
 						exitCode: -1, // -1 = still running
@@ -669,25 +831,26 @@ export default function (pi: ExtensionAPI) {
 				};
 
 				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
-					const result = await runSingleAgent(
-						ctx.cwd,
+					const result = await runSingleAgent({
+						defaultCwd: ctx.cwd,
 						agents,
-						t.agent,
-						t.task,
-						t.cwd,
-						undefined,
+						agentName: t.agent,
+						task: t.task,
+						cwd: t.cwd,
+						step: undefined,
 						signal,
 						// Per-task update callback
-						(partial) => {
+						onUpdate: (partial) => {
 							if (partial.details?.results[0]) {
 								allResults[index] = partial.details.results[0];
 								emitParallelUpdate();
 							}
 						},
-						makeDetails("parallel"),
-						t.model ?? params.model,
-						defaultModelFromSettings,
-					);
+						makeDetails: makeDetails("parallel"),
+						config: mergeSubagentConfig(baseConfig, t),
+						defaultModel: defaultModelFromSettings,
+						parentSessionFile,
+					});
 					allResults[index] = result;
 					emitParallelUpdate();
 					return result;
@@ -712,20 +875,21 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			if (params.agent && params.task) {
-				const result = await runSingleAgent(
-					ctx.cwd,
+			if (params.task !== undefined) {
+				const result = await runSingleAgent({
+					defaultCwd: ctx.cwd,
 					agents,
-					params.agent,
-					params.task,
-					params.cwd,
-					undefined,
+					agentName: params.agent,
+					task: params.task,
+					cwd: params.cwd,
+					step: undefined,
 					signal,
 					onUpdate,
-					makeDetails("single"),
-					params.model,
-					defaultModelFromSettings,
-				);
+					makeDetails: makeDetails("single"),
+					config: baseConfig,
+					defaultModel: defaultModelFromSettings,
+					parentSessionFile,
+				});
 				const isError = isFailedResult(result);
 				if (isError) {
 					const errorMsg = getResultOutput(result);
@@ -764,7 +928,7 @@ export default function (pi: ExtensionAPI) {
 						"\n  " +
 						theme.fg("muted", `${i + 1}.`) +
 						" " +
-						theme.fg("accent", step.agent) +
+						theme.fg("accent", step.agent ?? step.label ?? "subagent") +
 						theme.fg("dim", ` ${preview}`);
 				}
 				if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
@@ -777,12 +941,12 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("muted", ` [${scope}]`);
 				for (const t of args.tasks.slice(0, 3)) {
 					const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-					text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
+					text += `\n  ${theme.fg("accent", t.agent ?? t.label ?? "subagent")}${theme.fg("dim", ` ${preview}`)}`;
 				}
 				if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
 				return new Text(text, 0, 0);
 			}
-			const agentName = args.agent || "...";
+			const agentName = args.agent || args.label || "subagent";
 			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
 			let text =
 				theme.fg("toolTitle", theme.bold("subagent ")) +

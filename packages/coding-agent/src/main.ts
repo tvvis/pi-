@@ -37,7 +37,7 @@ import {
 	MissingSessionCwdError,
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
-import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { assertValidSessionId, SessionManager, type SessionParentRelation } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
@@ -331,7 +331,11 @@ async function createSessionManager(
 		}
 	}
 
-	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
+	return SessionManager.create(cwd, sessionDir, {
+		id: parsed.sessionId,
+		parentSession: parsed.parentSession,
+		parentRelation: parsed.parentRelation as SessionParentRelation | undefined,
+	});
 }
 
 function buildSessionOptions(

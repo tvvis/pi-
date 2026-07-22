@@ -15,11 +15,18 @@ import {
 } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress, SessionParentRelation } from "../../../core/session-manager.ts";
-import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, keyText } from "./keybinding-hints.ts";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.ts";
+import {
+	buildSessionTree,
+	buildTreeParentMap,
+	canonicalizePath,
+	type FlatSessionNode,
+	flattenSessionTree,
+	type SessionTreeNode,
+} from "./session-selector-tree.ts";
 
 type SessionScope = "current" | "all";
 
@@ -46,11 +53,6 @@ function formatSessionDate(date: Date): string {
 	if (diffDays < 30) return `${Math.floor(diffDays / 7)}w`;
 	if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo`;
 	return `${Math.floor(diffDays / 365)}y`;
-}
-
-function canonicalizePath(path: string | undefined): string | undefined {
-	if (!path) return path;
-	return _canonicalizePath(path);
 }
 
 class SessionSelectorHeader implements Component {
@@ -187,108 +189,14 @@ class SessionSelectorHeader implements Component {
 	}
 }
 
-/** A session tree node for hierarchical display */
-interface SessionTreeNode {
-	session: SessionInfo;
-	children: SessionTreeNode[];
-}
-
-/** Flattened node for display with tree structure info */
-interface FlatSessionNode {
-	session: SessionInfo;
-	depth: number;
-	isLast: boolean;
-	/** For each ancestor level, whether there are more siblings after it */
-	ancestorContinues: boolean[];
-	/** Whether this session has any children (for fold marker) */
-	hasChildren: boolean;
-	/** Whether this node's subtree is currently collapsed */
-	isFolded: boolean;
-}
-
-/**
- * Build a tree structure from sessions based on parentSessionPath.
- * Returns root nodes sorted by modified date (descending).
- */
-function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
-	const byPath = new Map<string, SessionTreeNode>();
-
-	for (const session of sessions) {
-		const sessionPath = canonicalizePath(session.path) ?? session.path;
-		byPath.set(sessionPath, { session, children: [] });
-	}
-
-	const roots: SessionTreeNode[] = [];
-
-	for (const session of sessions) {
-		const sessionPath = canonicalizePath(session.path) ?? session.path;
-		const node = byPath.get(sessionPath)!;
-		const parentPath = canonicalizePath(session.parentSessionPath);
-
-		if (parentPath && byPath.has(parentPath)) {
-			byPath.get(parentPath)!.children.push(node);
-		} else {
-			roots.push(node);
-		}
-	}
-
-	// Sort children and roots by modified date (descending)
-	const sortNodes = (nodes: SessionTreeNode[]): void => {
-		nodes.sort((a, b) => b.session.modified.getTime() - a.session.modified.getTime());
-		for (const node of nodes) {
-			sortNodes(node.children);
-		}
-	};
-	sortNodes(roots);
-
-	return roots;
-}
-
-/**
- * Flatten tree into display list with tree structure metadata.
- * `foldedPaths` (canonicalized session paths) hides the entire subtree of
- * matching nodes. Used for the default-collapsed session tree.
- */
-function flattenSessionTree(roots: SessionTreeNode[], foldedPaths?: Set<string>): FlatSessionNode[] {
-	const result: FlatSessionNode[] = [];
-	const folded = foldedPaths ?? new Set<string>();
-
-	const walk = (node: SessionTreeNode, depth: number, ancestorContinues: boolean[], isLast: boolean): void => {
-		const nodePath = canonicalizePath(node.session.path) ?? node.session.path;
-		const hasChildren = node.children.length > 0;
-		result.push({
-			session: node.session,
-			depth,
-			isLast,
-			ancestorContinues,
-			hasChildren,
-			isFolded: folded.has(nodePath),
-		});
-
-		if (folded.has(nodePath)) return; // subtree collapsed
-
-		for (let i = 0; i < node.children.length; i++) {
-			const childIsLast = i === node.children.length - 1;
-			// Only show continuation line for non-root ancestors
-			const continues = depth > 0 ? !isLast : false;
-			walk(node.children[i]!, depth + 1, [...ancestorContinues, continues], childIsLast);
-		}
-	};
-
-	for (let i = 0; i < roots.length; i++) {
-		walk(roots[i]!, 0, [], i === roots.length - 1);
-	}
-
-	return result;
-}
-
 /**
  * Custom session list component with multi-line items and search
  */
 class SessionList implements Component, Focusable {
 	public getSelectedSessionPath(): string | undefined {
 		const selected = this.filteredSessions[this.selectedIndex];
-		return selected?.session.path;
+		if (!selected || selected.virtual) return undefined;
+		return selected.session.path;
 	}
 	private allSessions: SessionInfo[] = [];
 	private filteredSessions: FlatSessionNode[] = [];
@@ -307,6 +215,8 @@ class SessionList implements Component, Focusable {
 	private foldStateInitialized = false;
 	/** Canonical path → SessionInfo, rebuilt each filter pass for ancestor lookups. */
 	private sessionByPath: Map<string, SessionInfo> = new Map();
+	/** Child canonical path → parent canonical path from the tree (includes virtual group nodes). */
+	private treeParentByPath: Map<string, string> = new Map();
 	/** Nodes auto-expanded by cursor movement (folded again once the cursor leaves their subtree). */
 	private autoExpanded: Set<string> = new Set();
 	public onSelect?: (sessionPath: string) => void;
@@ -352,11 +262,9 @@ class SessionList implements Component, Focusable {
 
 		// Handle Enter in search input - select current item
 		this.searchInput.onSubmit = () => {
-			if (this.filteredSessions[this.selectedIndex]) {
-				const selected = this.filteredSessions[this.selectedIndex];
-				if (this.onSelect) {
-					this.onSelect(selected.session.path);
-				}
+			const selected = this.filteredSessions[this.selectedIndex];
+			if (selected && !selected.virtual && this.onSelect) {
+				this.onSelect(selected.session.path);
 			}
 		};
 	}
@@ -393,10 +301,21 @@ class SessionList implements Component, Focusable {
 		if (this.sortMode === "threaded" && !trimmed) {
 			// Threaded mode without search: show tree structure
 			const roots = buildSessionTree(nameFiltered);
+			this.treeParentByPath = buildTreeParentMap(roots);
+			// Register virtual group sessions so ancestor lookups can find them.
+			const registerVirtual = (node: SessionTreeNode): void => {
+				if (node.virtual) {
+					const p = canonicalizePath(node.session.path) ?? node.session.path;
+					this.sessionByPath.set(p, node.session);
+				}
+				for (const child of node.children) registerVirtual(child);
+			};
+			for (const root of roots) registerVirtual(root);
 			this.seedDefaultFoldState(roots);
 			this.filteredSessions = flattenSessionTree(roots, this.foldedPaths);
 		} else {
 			// Other modes or with search: flat list
+			this.treeParentByPath = new Map();
 			const filtered = filterAndSortSessions(nameFiltered, query, this.sortMode, "all");
 			this.filteredSessions = filtered.map((session) => ({
 				session,
@@ -420,23 +339,14 @@ class SessionList implements Component, Focusable {
 		this.foldStateInitialized = true;
 		this.foldedPaths = new Set();
 
-		// Collect the canonical path of the current session and its ancestors.
+		// Collect the canonical path of the current session and its ancestors,
+		// walking the actual tree so virtual group nodes count as ancestors.
 		const visibleAncestors = new Set<string>();
 		if (this.currentSessionCanonicalPath) {
-			const byPath = new Map<string, SessionTreeNode>();
-			const collect = (node: SessionTreeNode): void => {
-				const p = canonicalizePath(node.session.path) ?? node.session.path;
-				byPath.set(p, node);
-				for (const child of node.children) collect(child);
-			};
-			for (const root of roots) collect(root);
-
-			let current = byPath.get(this.currentSessionCanonicalPath);
-			while (current) {
-				const p = canonicalizePath(current.session.path) ?? current.session.path;
-				visibleAncestors.add(p);
-				const parentPath = canonicalizePath(current.session.parentSessionPath);
-				current = parentPath ? byPath.get(parentPath) : undefined;
+			let currentPath: string | undefined = this.currentSessionCanonicalPath;
+			while (currentPath) {
+				visibleAncestors.add(currentPath);
+				currentPath = this.treeParentByPath.get(currentPath);
 			}
 		}
 
@@ -463,14 +373,15 @@ class SessionList implements Component, Focusable {
 		if (!selected) return;
 		const selectedPath = canonicalizePath(selected.session.path) ?? selected.session.path;
 
-		// Compute the ancestor set of the newly selected node (its lineage).
+		// Compute the ancestor set of the newly selected node (its lineage),
+		// walking the actual tree so virtual group nodes are included.
 		const ancestorSet = new Set<string>();
-		let current = this.sessionByPath.get(selectedPath);
-		while (current?.parentSessionPath) {
-			const p = canonicalizePath(current.parentSessionPath);
-			if (!p || !this.sessionByPath.has(p)) break;
-			ancestorSet.add(p);
-			current = this.sessionByPath.get(p);
+		let currentPath: string | undefined = selectedPath;
+		while (currentPath) {
+			const parentPath = this.treeParentByPath.get(currentPath);
+			if (!parentPath) break;
+			ancestorSet.add(parentPath);
+			currentPath = parentPath;
 		}
 
 		// Re-fold auto-expanded nodes the cursor has left.
@@ -506,6 +417,9 @@ class SessionList implements Component, Focusable {
 	private startDeleteConfirmationForSelectedSession(): void {
 		const selected = this.filteredSessions[this.selectedIndex];
 		if (!selected) return;
+
+		// Virtual group nodes are not real sessions and cannot be deleted.
+		if (selected.virtual) return;
 
 		// Prevent deleting current session
 		if (this.isCurrentSessionPath(selected.session.path)) {
@@ -656,6 +570,8 @@ class SessionList implements Component, Focusable {
 				return theme.fg("accent", "⎇ ");
 			case "plan":
 				return theme.fg("warning", "✦ ");
+			case "subagent":
+				return theme.fg("accent", "◆ ");
 			default:
 				return "";
 		}
@@ -712,7 +628,7 @@ class SessionList implements Component, Focusable {
 		// Rename selected session
 		if (kb.matches(keyData, "app.session.rename")) {
 			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected) {
+			if (selected && !selected.virtual) {
 				this.onRenameSession?.(selected.session.path);
 			}
 			return;
@@ -779,7 +695,7 @@ class SessionList implements Component, Focusable {
 		// Enter
 		else if (kb.matches(keyData, "tui.select.confirm")) {
 			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected && this.onSelect) {
+			if (selected && !selected.virtual && this.onSelect) {
 				this.onSelect(selected.session.path);
 			}
 		}

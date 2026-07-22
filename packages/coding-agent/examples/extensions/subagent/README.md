@@ -10,6 +10,41 @@ Delegate tasks to specialized subagents with isolated context windows.
 - **Markdown rendering**: Final output rendered with proper formatting (expanded view)
 - **Usage tracking**: Shows turns, tokens, cost, and context usage per agent
 - **Abort support**: Ctrl+C propagates to kill subagent processes
+- **Persisted child sessions**: Each subagent run is saved as a real session file linked to the parent, auto-named, and browsable/resumable from `/resume`
+
+## Session Persistence
+
+Each subagent invocation runs a separate `pi` process that persists its own session file (it no longer runs with `--no-session`). The child session:
+
+- Is linked back to the calling (parent) session via `parentRelation: "subagent"` in its header, using `--parent-session <parent-file> --parent-relation subagent`.
+- Is auto-named `subagent:<agent> - <task>` (task whitespace-normalized and capped at 40 chars), so it is recognizable in `/resume`.
+- Lands in the same project session directory as the parent (the child runs in the parent's cwd), so it shows up under that project in `/resume`.
+
+In the `/resume` session tree, all `subagent` children of a session are gathered under a virtual **subagent** group node (collapsed by default, not written to disk). Expand the group to see the individual child sessions; each can be resumed independently as a standalone session (resuming a child does not return to the parent).
+
+When the parent itself runs without a session file (e.g. `pi --no-session`), the child still persists but has no parent linkage.
+
+## Generic Mode & Parent Control
+
+A subagent is a generic `pi` process. The parent (calling) agent controls what the child loads and knows:
+
+- **Generic mode**: omit `agent` to run a generic subagent (no named preset). Use `label` to name it in `/resume` (defaults to `subagent`).
+- **Named preset**: pass `agent: "<name>"` to load a discovered agent's system prompt/tools/model as defaults (see [Agent Definitions](#agent-definitions)). The parent controls below still override the preset.
+- **Skills**: `skills: ["<path>", ...]` loads specific skills (`--skill`); `noSkills: true` disables skill discovery (`--no-skills`). Combine both to load *only* the given skills.
+- **Context**: `systemPrompt: "<text>"` overrides the child's system prompt (`--system-prompt`); `appendSystemPrompt: ["<text-or-file>", ...]` appends context (`--append-system-prompt`).
+- **Tools / model**: `tools: [...]` (`--tools`) and `model: "<provider/id>"`.
+
+All of these can be set at the top level (applies to every child) and overridden per item in `tasks[]` / `chain[]`. Merge priority: **item > top-level > agent preset default**.
+
+### Generic example (no skills, restricted tools)
+```
+{ task: "Summarize README.md", noSkills: true, tools: ["read"], label: "summarizer" }
+```
+
+### Parent-controlled context example
+```
+{ task: "Review this diff", appendSystemPrompt: ["Focus on security issues."], skills: ["~/.pi/agent/skills/security"] }
+```
 
 ## Structure
 
@@ -92,8 +127,8 @@ Use a chain: first have scout find the read tool, then have planner suggest impr
 
 | Mode | Parameter | Description |
 |------|-----------|-------------|
-| Single | `{ agent, task }` | One agent, one task |
-| Parallel | `{ tasks: [...] }` | Multiple agents run concurrently (max 8, 4 concurrent) |
+| Single | `{ task, agent? }` | One task; `agent` optional (omit for a generic subagent) |
+| Parallel | `{ tasks: [...] }` | Multiple tasks run concurrently (max 8, 4 concurrent) |
 | Chain | `{ chain: [...] }` | Sequential with `{previous}` placeholder |
 
 ## Output Display
@@ -123,6 +158,8 @@ Use a chain: first have scout find the read tool, then have planner suggest impr
 - etc.
 
 ## Agent Definitions
+
+Named agents are **optional presets**. Omit `agent` to run a generic subagent fully controlled by the parent (see [Generic Mode & Parent Control](#generic-mode--parent-control)). When `agent` is given, the agent's system prompt/tools/model are used as defaults.
 
 Agents are markdown files with YAML frontmatter:
 

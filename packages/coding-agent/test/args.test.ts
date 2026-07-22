@@ -202,6 +202,41 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--parent-session / --parent-relation flags", () => {
+		test("parses --parent-session", () => {
+			const result = parseArgs(["--parent-session", "/path/to/parent.jsonl"]);
+			expect(result.parentSession).toBe("/path/to/parent.jsonl");
+		});
+
+		test("parses --parent-relation subagent", () => {
+			const result = parseArgs(["--parent-relation", "subagent"]);
+			expect(result.parentRelation).toBe("subagent");
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("accepts fork and plan relations", () => {
+			expect(parseArgs(["--parent-relation", "fork"]).parentRelation).toBe("fork");
+			expect(parseArgs(["--parent-relation", "plan"]).parentRelation).toBe("plan");
+		});
+
+		test("parses both flags together", () => {
+			const result = parseArgs(["--parent-session", "/path/to/parent.jsonl", "--parent-relation", "subagent"]);
+			expect(result.parentSession).toBe("/path/to/parent.jsonl");
+			expect(result.parentRelation).toBe("subagent");
+		});
+
+		test("reports an error diagnostic for an invalid relation", () => {
+			const result = parseArgs(["--parent-relation", "foo"]);
+			expect(result.parentRelation).toBeUndefined();
+			expect(result.diagnostics).toEqual([
+				{
+					type: "error",
+					message: 'Invalid --parent-relation "foo". Valid values: fork, plan, subagent',
+				},
+			]);
+		});
+	});
+
 	describe("--extension flag", () => {
 		test("parses single --extension", () => {
 			const result = parseArgs(["--extension", "./my-extension.ts"]);

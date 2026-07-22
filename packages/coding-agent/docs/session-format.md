@@ -197,6 +197,12 @@ For sessions with a parent (created via `/fork`, `/clone`, or `newSession({ pare
 {"type":"session","version":3,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSession":"/path/to/original/session.jsonl"}
 ```
 
+The optional `parentRelation` field records how the session relates to its parent (the lineage edge type). Values: `"fork"`, `"plan"`, `"subagent"`. The `/resume` session tree renders a distinct edge label per relation and groups `subagent` children of a session under a virtual "subagent" node. Subagent child sessions are created by the subagent extension via `--parent-session <path> --parent-relation subagent`.
+
+```json
+{"type":"session","version":3,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSession":"/path/to/parent.jsonl","parentRelation":"subagent"}
+```
+
 ### SessionMessageEntry
 
 A message in the conversation. The `message` field contains an `AgentMessage`.
@@ -290,6 +296,14 @@ Session metadata (e.g., user-defined display name). Set via `/name`, `--name` / 
 
 The session name is displayed in the session selector (`/resume`) instead of the first message when set.
 
+### ExecutePlanEntry
+
+Records that this session is executing an approved plan at `planPath`. The last such entry on the active branch is restored as the session's execute-plan context, which adds an `## Executing Plan` section to the system prompt pointing the model at the plan. Written by `AgentSession.setExecutePlan()` (plan-mode options 1/3/4); an empty `planPath` clears a previously set plan. Survives `/resume` and session rebinds so a queued execution session (plan-mode option 4) keeps its plan context.
+
+```json
+{"type":"execute_plan","id":"l2m3n4o5","parentId":"k1l2m3n4","timestamp":"2024-12-03T14:36:00.000Z","planPath":"/home/user/.pi/draft/abc/draft.md","title":"Refactor auth flow"}
+```
+
 ## Tree Structure
 
 Entries form a tree:
@@ -354,6 +368,9 @@ for (const line of lines) {
     case "thinking_level_change":
       console.log(`[${entry.id}] Thinking: ${entry.thinkingLevel}`);
       break;
+    case "execute_plan":
+      console.log(`[${entry.id}] Executing plan: ${entry.planPath || "(cleared)"}`);
+      break;
   }
 }
 ```
@@ -374,7 +391,7 @@ Key methods for working with sessions programmatically.
 - `SessionManager.listAll(onProgress?)` - List all sessions across all projects
 
 ### Instance Methods - Session Management
-- `newSession(options?)` - Start a new session (options: `{ parentSession?: string }`)
+- `newSession(options?)` - Start a new session (options: `{ parentSession?: string, parentRelation?: "fork" | "plan" | "subagent" }`)
 - `setSessionFile(path)` - Switch to a different session file
 - `createBranchedSession(leafId)` - Extract branch to new session file
 

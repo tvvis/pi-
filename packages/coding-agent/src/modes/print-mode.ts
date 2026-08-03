@@ -8,6 +8,7 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import { TRUNCATED_RESPONSE_HINT } from "../core/hints.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 
@@ -140,6 +141,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 						if (content.type === "text") {
 							writeRawStdout(`${content.text}\n`);
 						}
+					}
+					if (assistantMsg.stopReason === "length") {
+						console.error(`Warning: ${TRUNCATED_RESPONSE_HINT}`);
 					}
 				}
 			}

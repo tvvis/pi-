@@ -58,7 +58,7 @@ export function createPlanToolDefinition(): ToolDefinition<typeof planSchema, { 
 			"This tool is only usable in plan mode.",
 		promptSnippet: "Signal that the plan is ready for user confirmation",
 		promptGuidelines: [
-			"Call plan({ready: true}) only when the plan draft is fully written and you are at a decision point",
+			"Call plan({ready: true}) only once the draft is complete AND the key open questions are confirmed with the user - not before",
 			"The plan is rendered in the chat for review, then a 3-option popup appears: execute / refine / new session",
 			"Do not call this tool outside plan mode",
 		],

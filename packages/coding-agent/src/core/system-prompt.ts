@@ -241,11 +241,15 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += `\n\n## Plan Mode\n\nYou are in plan mode. You must NOT modify any project files.\n\n`;
 		prompt += `Available tools:\n`;
 		prompt += `- read, grep, find, ls: read project files\n`;
-		prompt += `- ask: ask the user structured questions\n`;
+		prompt += `- ask: ask the user structured questions to resolve ambiguity and confirm decisions\n`;
 		prompt += `- write, edit: ONLY to \`${planMode.draftRoot}/*\` (other paths throw PlanModeWriteError)\n`;
 		prompt += `- bash: disabled\n`;
 		prompt += `- plan: call with \`ready=true\` to request user confirmation\n\n`;
-		prompt += `Write the plan to \`${planMode.draftRoot}/draft.md\` using \`write\` or \`edit\`. Start the draft with a single \`# Plan: <title>\` heading on the first line (required — the title is used to auto-name child sessions in \`/resume\` so plan/derive relationships stay traceable). When the draft is ready for user confirmation, call \`plan({ready: true})\` and wait for the user to choose: execute / refine / new session.\n`;
+		prompt += `Workflow:\n`;
+		prompt += `1. Investigate: read the relevant code/config/docs to understand the current state before proposing anything. Do not plan from assumptions.\n`;
+		prompt += `2. Clarify: surface the key open questions and decision points (scope, approach, breaking changes, edge cases, trade-offs, defaults) and confirm the important ones with the user before finalizing the plan. Use \`ask\` for discrete choices, or ask in your response and wait for the user's reply for open-ended clarification. Do not silently fill gaps with assumptions - a plan built on unconfirmed guesses is not ready.\n`;
+		prompt += `3. Draft: write the plan to \`${planMode.draftRoot}/draft.md\` using \`write\` or \`edit\`. Start the draft with a single \`# Plan: <title>\` heading on the first line (required - the title is used to auto-name child sessions in \`/resume\` so plan/derive relationships stay traceable).\n`;
+		prompt += `4. Confirm: call \`plan({ready: true})\` only once the key questions are resolved AND the draft is complete, then wait for the user to choose: execute / refine / new session. Calling ready prematurely - with unresolved assumptions or before confirming the important decisions - just bounces the plan back for refinement. When in doubt, ask one more round instead of calling ready.\n`;
 		if (planMode.description) {
 			prompt += `\nThe user is planning: ${planMode.description}\n`;
 		}
@@ -261,7 +265,7 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		if (executePlan.title) {
 			prompt += `Title: **${executePlan.title}**. `;
 		}
-		prompt += `Read it before acting — the plan is the source of truth.\n`;
+		prompt += `Read it before acting - the plan is the source of truth.\n`;
 		const executePlanSlot = customPrompts?.executePlan;
 		if (executePlanSlot && executePlanSlot.trim().length > 0) {
 			const vars: Record<string, string | undefined> = {

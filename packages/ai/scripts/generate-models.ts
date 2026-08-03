@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { writeFileSync } from "fs";
+import { get as httpGet } from "node:http";
+import { get as httpsGet } from "node:https";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -10,6 +12,7 @@ import {
 	CLOUDFLARE_WORKERS_AI_BASE_URL,
 } from "../src/providers/cloudflare.ts";
 import type { AnthropicMessagesCompat, Api, KnownProvider, Model, OpenAICompletionsCompat } from "../src/types.ts";
+import { createHttpProxyAgentsForTarget } from "../src/utils/node-http-proxy.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -368,11 +371,44 @@ function getBedrockBaseUrl(modelId: string): string {
 		: "https://bedrock-runtime.us-east-1.amazonaws.com";
 }
 
+/**
+ * Downloads a JSON document over HTTP(S).
+ *
+ * The global `fetch` (undici) ignores the standard `http_proxy`/`https_proxy`/
+ * `all_proxy` environment variables, so this goes through `node:http(s)` with
+ * the same proxy-agent resolution the runtime SDK uses
+ * (src/utils/node-http-proxy.ts).
+ */
+async function httpGetJson(url: string): Promise<unknown> {
+	const buffer = await new Promise<Buffer>((resolve, reject) => {
+		const parsedUrl = new URL(url);
+		const agents = createHttpProxyAgentsForTarget(parsedUrl);
+		const get = parsedUrl.protocol === "https:" ? httpsGet : httpGet;
+		const request = get(
+			url,
+			{
+				agent: parsedUrl.protocol === "https:" ? agents?.httpsAgent : agents?.httpAgent,
+			},
+			(response) => {
+				if (response.statusCode !== 200) {
+					response.resume();
+					reject(new Error(`GET ${url} failed with status ${response.statusCode}`));
+					return;
+				}
+				const chunks: Buffer[] = [];
+				response.on("data", (chunk) => chunks.push(chunk as Buffer));
+				response.on("end", () => resolve(Buffer.concat(chunks)));
+			},
+		);
+		request.on("error", reject);
+	});
+	return JSON.parse(buffer.toString("utf8"));
+}
+
 async function loadModelsDevData(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from models.dev API...");
-		const response = await fetch("https://models.dev/api.json");
-		const data = await response.json();
+		const data = await httpGetJson("https://models.dev/api.json");
 
 		const models: Model<any>[] = [];
 

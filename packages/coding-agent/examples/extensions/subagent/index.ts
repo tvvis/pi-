@@ -67,6 +67,30 @@ function resolveDefaultModelFromSettings(cwd: string): string | undefined {
 	return undefined;
 }
 
+/**
+ * Read the model list the parent configured in `settings.json` (`enabledModels`).
+ * Used to advertise valid `model` values in the tool description so the LLM can
+ * pass one directly without inspecting settings first. Returns `[]` when unset.
+ */
+export function readEnabledModelsFromSettings(cwd: string): string[] {
+	const candidates = [path.join(getAgentDir(), "settings.json"), path.join(cwd, ".pi", "settings.json")];
+	for (const filePath of candidates) {
+		if (!existsSync(filePath)) continue;
+		try {
+			const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as { enabledModels?: unknown };
+			if (!Array.isArray(parsed.enabledModels)) continue;
+			const models = parsed.enabledModels
+				.filter((m): m is string => typeof m === "string")
+				.map((m) => m.trim())
+				.filter((m) => m.length > 0);
+			if (models.length > 0) return models;
+		} catch {
+			// Try the next candidate.
+		}
+	}
+	return [];
+}
+
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
@@ -315,6 +339,10 @@ export interface SubagentArgsOptions {
 	skills: string[] | undefined;
 	systemPrompt: string | undefined;
 	appendSystemPrompt: string[] | undefined;
+	/** Disable all pi function tools in the child (`--no-tools`). */
+	noTools?: boolean;
+	/** Skip project context files in the child (`--no-context-files`). */
+	noContext?: boolean;
 }
 
 /**
@@ -329,6 +357,8 @@ export function buildSubagentArgs(options: SubagentArgsOptions): string[] {
 	const args: string[] = ["--mode", "json", "-p"];
 	if (options.resolvedModel) args.push("--model", options.resolvedModel);
 	if (options.tools && options.tools.length > 0) args.push("--tools", options.tools.join(","));
+	if (options.noTools) args.push("--no-tools");
+	if (options.noContext) args.push("--no-context-files");
 	if (options.noSkills) args.push("--no-skills");
 	if (options.skills) {
 		for (const skill of options.skills) args.push("--skill", skill);
@@ -370,6 +400,60 @@ function mergeSubagentConfig(parent: SubagentConfig, item: SubagentConfigOverrid
 		noSkills: item.noSkills ?? parent.noSkills,
 		label: item.label ?? parent.label,
 	};
+}
+
+const TYPE_AGENT_CONFLICT =
+	'Specify only one of `type` or `agent` for a subagent. Use `type: "standard"` (the default) for a generic subagent with no preset.';
+
+/** Minimal shape of a subagent scope used for `type`/`agent` resolution. */
+interface TypeAgentScope {
+	type?: string;
+	agent?: string;
+}
+
+/** Minimal shape of subagent params used for `type`/`agent` resolution. */
+interface TypeAgentParams extends TypeAgentScope {
+	tasks?: readonly TypeAgentScope[];
+	chain?: readonly TypeAgentScope[];
+}
+
+/**
+ * Validate that no subagent scope sets both `type` and `agent`. They are
+ * alternative ways to name a preset; only one may be used per scope. Returns
+ * the conflict message when a scope is malformed, otherwise `undefined`.
+ */
+export function validateTypeAgentExclusivity(params: TypeAgentParams): string | undefined {
+	if (params.type !== undefined && params.agent !== undefined) return TYPE_AGENT_CONFLICT;
+	if (params.tasks)
+		for (const t of params.tasks) if (t.type !== undefined && t.agent !== undefined) return TYPE_AGENT_CONFLICT;
+	if (params.chain)
+		for (const s of params.chain) if (s.type !== undefined && s.agent !== undefined) return TYPE_AGENT_CONFLICT;
+	return undefined;
+}
+
+/**
+ * Resolve the agent preset name to load for a subagent scope. Assumes
+ * `validateTypeAgentExclusivity` has already passed (no `type`+`agent` conflict).
+ *
+ * - `type: "standard"` (or both omitted) -> `undefined` (generic subagent, no preset)
+ * - `type: "<name>"` -> `"<name>"` (loads that agent preset)
+ * - `agent: "<name>"` (legacy alias) -> `"<name>"`
+ */
+export function presetNameFrom(type: string | undefined, agent: string | undefined): string | undefined {
+	if (type === "standard") return undefined;
+	return type ?? agent;
+}
+
+/**
+ * Display name for a subagent scope (call rendering + streaming placeholders).
+ * Falls back to `label` or "subagent" for the generic case.
+ */
+export function presetDisplayName(
+	type: string | undefined,
+	agent: string | undefined,
+	label: string | undefined,
+): string {
+	return presetNameFrom(type, agent) ?? label ?? "subagent";
 }
 
 interface RunSingleAgentOptions {
@@ -424,6 +508,9 @@ async function runSingleAgent(opts: RunSingleAgentOptions): Promise<SingleResult
 	const agentSource = agent ? agent.source : "generic";
 	const resolvedModel = config.model ?? agent?.model ?? defaultModel;
 	const effectiveTools = config.tools ?? agent?.tools;
+	const noTools = agent?.noTools ?? false;
+	const noContext = agent?.noContext ?? false;
+	const replaceSystemPrompt = agent?.replaceSystemPrompt ?? false;
 
 	const args = buildSubagentArgs({
 		agentName: displayName,
@@ -435,6 +522,8 @@ async function runSingleAgent(opts: RunSingleAgentOptions): Promise<SingleResult
 		skills: config.skills,
 		systemPrompt: config.systemPrompt,
 		appendSystemPrompt: config.appendSystemPrompt,
+		noTools,
+		noContext,
 	});
 
 	let tmpPromptDir: string | null = null;
@@ -466,7 +555,7 @@ async function runSingleAgent(opts: RunSingleAgentOptions): Promise<SingleResult
 			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
-			args.push("--append-system-prompt", tmpPromptPath);
+			args.push(replaceSystemPrompt ? "--system-prompt" : "--append-system-prompt", tmpPromptPath);
 		}
 
 		args.push(`Task: ${task}`);
@@ -572,6 +661,12 @@ async function runSingleAgent(opts: RunSingleAgentOptions): Promise<SingleResult
 
 const TaskItem = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Named agent preset to invoke; omit for a generic subagent" })),
+	type: Type.Optional(
+		Type.String({
+			description:
+				'Subagent type for this task: "standard" (default) for a generic subagent, or a registered agent preset name. Mutually exclusive with `agent`.',
+		}),
+	),
 	task: Type.String({ description: "Task to delegate to the agent" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 	model: Type.Optional(Type.String({ description: "Model override for this task (e.g. provider/model-id)" })),
@@ -589,6 +684,12 @@ const TaskItem = Type.Object({
 
 const ChainItem = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Named agent preset to invoke; omit for a generic subagent" })),
+	type: Type.Optional(
+		Type.String({
+			description:
+				'Subagent type for this step: "standard" (default) for a generic subagent, or a registered agent preset name. Mutually exclusive with `agent`.',
+		}),
+	),
 	task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 	model: Type.Optional(Type.String({ description: "Model override for this step" })),
@@ -612,6 +713,12 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 const SubagentParams = Type.Object({
 	agent: Type.Optional(
 		Type.String({ description: "Named agent preset to invoke (single mode); omit for a generic subagent" }),
+	),
+	type: Type.Optional(
+		Type.String({
+			description:
+				'Subagent type. "standard" (default) runs a generic subagent with no preset. Any other value names a registered agent preset (system prompt + model + tools), equivalent to `agent`. Mutually exclusive with `agent`.',
+		}),
 	),
 	task: Type.Optional(Type.String({ description: "Task to delegate (for single mode)" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
@@ -649,16 +756,35 @@ const SubagentParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	// Advertise the parent's configured models in the tool schema so the LLM
+	// can set `model` directly instead of checking settings first.
+	const enabledModels = readEnabledModelsFromSettings(process.cwd());
+	const availableModelsDescription =
+		enabledModels.length > 0
+			? ` Available models (from settings.json enabledModels): ${enabledModels.join(", ")}. Pass one of these as \`model\` (top-level or per-item) to control which model a subagent uses.`
+			: "";
+
+	// Inject the live model list into the `model` parameter descriptions too.
+	for (const schema of [SubagentParams, TaskItem, ChainItem]) {
+		const modelProp = schema.properties.model as unknown as { description?: string } | undefined;
+		if (modelProp && availableModelsDescription) {
+			modelProp.description = `${modelProp.description ?? ""}${availableModelsDescription}`.trim();
+		}
+	}
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
 		description: [
-			"Delegate tasks to subagents with isolated context. Each subagent is a generic pi process: omit `agent` to run a generic subagent, or pass a named agent preset.",
+			'Delegate tasks to subagents with isolated context. Each subagent is a generic pi process: use `type: "standard"` (the default) for a generic subagent, or `type: "<preset>"` to load a named agent preset (system prompt + model + tools). `agent` is a legacy alias for `type`.',
 			"The parent controls the child's skills (`skills`/`noSkills`), context (`systemPrompt`/`appendSystemPrompt`), tools, and model; per-item overrides apply in parallel/chain.",
 			"Modes: single (task), parallel (tasks array), chain (sequential with {previous} placeholder).",
 			'Named agent presets are discovered from ~/.pi/agent/agents (default scope "user"); set agentScope: "both" (or "project") to include .pi/agents.',
 			"Model resolution (highest first): per-item model, call-site `model`, agent frontmatter `model`, then settings.json defaultProvider/defaultModel, then pi's built-in default.",
-		].join(" "),
+			availableModelsDescription,
+		]
+			.filter(Boolean)
+			.join(" "),
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -708,11 +834,30 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			// `type` and `agent` are alternative ways to name a preset; reject calls that set both.
+			const typeAgentError = validateTypeAgentExclusivity(params);
+			if (typeAgentError) {
+				return {
+					content: [{ type: "text", text: typeAgentError }],
+					details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+					isError: true,
+				};
+			}
+
 			if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
 				const requestedAgentNames = new Set<string>();
-				if (params.chain) for (const step of params.chain) if (step.agent) requestedAgentNames.add(step.agent);
-				if (params.tasks) for (const t of params.tasks) if (t.agent) requestedAgentNames.add(t.agent);
-				if (params.agent) requestedAgentNames.add(params.agent);
+				if (params.chain)
+					for (const step of params.chain) {
+						const n = presetNameFrom(step.type, step.agent);
+						if (n) requestedAgentNames.add(n);
+					}
+				if (params.tasks)
+					for (const t of params.tasks) {
+						const n = presetNameFrom(t.type, t.agent);
+						if (n) requestedAgentNames.add(n);
+					}
+				const topLevelPreset = presetNameFrom(params.type, params.agent);
+				if (topLevelPreset) requestedAgentNames.add(topLevelPreset);
 
 				const projectAgentsRequested = Array.from(requestedAgentNames)
 					.map((name) => agents.find((a) => a.name === name))
@@ -759,7 +904,7 @@ export default function (pi: ExtensionAPI) {
 					const result = await runSingleAgent({
 						defaultCwd: ctx.cwd,
 						agents,
-						agentName: step.agent,
+						agentName: presetNameFrom(step.type, step.agent),
 						task: taskWithContext,
 						cwd: step.cwd,
 						step: i + 1,
@@ -807,7 +952,7 @@ export default function (pi: ExtensionAPI) {
 				// Initialize placeholder results
 				for (let i = 0; i < params.tasks.length; i++) {
 					allResults[i] = {
-						agent: params.tasks[i].agent ?? params.tasks[i].label ?? "subagent",
+						agent: presetDisplayName(params.tasks[i].type, params.tasks[i].agent, params.tasks[i].label),
 						agentSource: "unknown",
 						task: params.tasks[i].task,
 						exitCode: -1, // -1 = still running
@@ -834,7 +979,7 @@ export default function (pi: ExtensionAPI) {
 					const result = await runSingleAgent({
 						defaultCwd: ctx.cwd,
 						agents,
-						agentName: t.agent,
+						agentName: presetNameFrom(t.type, t.agent),
 						task: t.task,
 						cwd: t.cwd,
 						step: undefined,
@@ -879,7 +1024,7 @@ export default function (pi: ExtensionAPI) {
 				const result = await runSingleAgent({
 					defaultCwd: ctx.cwd,
 					agents,
-					agentName: params.agent,
+					agentName: presetNameFrom(params.type, params.agent),
 					task: params.task,
 					cwd: params.cwd,
 					step: undefined,
@@ -928,7 +1073,7 @@ export default function (pi: ExtensionAPI) {
 						"\n  " +
 						theme.fg("muted", `${i + 1}.`) +
 						" " +
-						theme.fg("accent", step.agent ?? step.label ?? "subagent") +
+						theme.fg("accent", presetDisplayName(step.type, step.agent, step.label)) +
 						theme.fg("dim", ` ${preview}`);
 				}
 				if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
@@ -941,12 +1086,12 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("muted", ` [${scope}]`);
 				for (const t of args.tasks.slice(0, 3)) {
 					const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-					text += `\n  ${theme.fg("accent", t.agent ?? t.label ?? "subagent")}${theme.fg("dim", ` ${preview}`)}`;
+					text += `\n  ${theme.fg("accent", presetDisplayName(t.type, t.agent, t.label))}${theme.fg("dim", ` ${preview}`)}`;
 				}
 				if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
 				return new Text(text, 0, 0);
 			}
-			const agentName = args.agent || args.label || "subagent";
+			const agentName = presetDisplayName(args.type, args.agent, args.label);
 			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
 			let text =
 				theme.fg("toolTitle", theme.bold("subagent ")) +

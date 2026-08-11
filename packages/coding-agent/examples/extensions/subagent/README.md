@@ -32,7 +32,7 @@ A subagent is a generic `pi` process. The parent (calling) agent controls what t
 - **Named preset**: pass `agent: "<name>"` to load a discovered agent's system prompt/tools/model as defaults (see [Agent Definitions](#agent-definitions)). The parent controls below still override the preset.
 - **Skills**: `skills: ["<path>", ...]` loads specific skills (`--skill`); `noSkills: true` disables skill discovery (`--no-skills`). Combine both to load *only* the given skills.
 - **Context**: `systemPrompt: "<text>"` overrides the child's system prompt (`--system-prompt`); `appendSystemPrompt: ["<text-or-file>", ...]` appends context (`--append-system-prompt`).
-- **Tools / model**: `tools: [...]` (`--tools`) and `model: "<provider/id>"`.
+- **Tools / model**: `tools: [...]` (`--tools`) and `model: "<provider/id>"`. At load time the tool advertises the models from `settings.json` `enabledModels` in its description (tool description + `model` parameter), so the parent model can pick one directly without reading settings first.
 
 All of these can be set at the top level (applies to every child) and overridden per item in `tasks[]` / `chain[]`. Merge priority: **item > top-level > agent preset default**.
 

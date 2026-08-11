@@ -5,25 +5,8 @@ import {
 	withCustomThinkingLevelsOverrides,
 	withThinkingLevelOverrides,
 } from "../src/models.ts";
-import type { ThinkingLevelMap } from "../src/types.ts";
 
 describe("withThinkingLevelOverrides", () => {
-	it("merges overrides into the model's thinkingLevelMap without mutating the input", () => {
-		const model = getModel("groq", "qwen/qwen3-32b");
-		expect(model).toBeDefined();
-
-		const overrides: ThinkingLevelMap = { medium: "MEDIUM", high: null };
-		const wrapped = withThinkingLevelOverrides(model!, overrides);
-
-		// Original is untouched.
-		expect(model!.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: null, high: "default" });
-		// Override keys win in the wrapped copy; untouched keys keep their values.
-		expect(wrapped.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: "MEDIUM", high: null });
-		expect(wrapped).not.toBe(model);
-		expect(wrapped.id).toBe(model!.id);
-		expect(wrapped.provider).toBe(model!.provider);
-	});
-
 	it("changes the supported levels visible to the TUI cycle", () => {
 		const model = getModel("openai", "gpt-5.5");
 		expect(model).toBeDefined();

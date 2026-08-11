@@ -118,8 +118,19 @@ export function createAskToolDefinition(): ToolDefinition<typeof askSchema, unde
 				return component;
 			});
 
-			if (signal?.aborted || selection.cancelled) {
-				throw new Error("User cancelled the selection");
+			if (signal?.aborted) {
+				throw new Error("Operation aborted");
+			}
+
+			if (selection.cancelled) {
+				// The user dismissed the question without answering. Do not feed a
+				// "cancelled" result back to the model — terminate the turn so the
+				// agent stops here and waits for the user's next input.
+				return {
+					content: [{ type: "text", text: "" }],
+					details: undefined,
+					terminate: true,
+				};
 			}
 
 			return {

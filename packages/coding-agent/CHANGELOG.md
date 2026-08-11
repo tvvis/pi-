@@ -60,6 +60,7 @@
 
 ### Fixed
 
+- Cancelling the `ask` dialog (Esc) no longer feeds a "User cancelled the selection" error back to the model as a tool result. The turn now terminates right after the cancel and waits for the user's next input instead of prompting the model to respond to the cancelled question.
 - Fixed opening and listing very large JSONL session files by reading session entries line-by-line instead of materializing the full file as one string ([#5231](https://github.com/earendil-works/pi/issues/5231)).
 - The fixed bottom input panel now auto-sizes to its content: it grows with multi-line / wrapping input and while the autocomplete dropdown (`@` file picker, `/` commands) is open, so the full text and suggestion list stay visible instead of being clipped by a fixed height. It is clamped to `terminalRows - 4` so at least a few rows of chat context remain above it, and adapts to terminal resizes automatically.
 - Plan mode choice 3 (new session) no longer leaves the new session idle on a stuck "working" spinner. It now automatically starts an execution turn that reads the previous draft and executes it, instead of waiting for user input.

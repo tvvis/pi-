@@ -7,6 +7,7 @@
 - Added `Model.customThinkingLevels?: readonly { label: string; value: string }[]`. When set on a model, this completely replaces the standard `thinkingLevelMap` cycle: the TUI shows each entry's `label` verbatim and the provider sends each entry's `value` verbatim — no pi-level indirection. Used by DeepSeek V4 to expose its native `high` / `max` efforts.
 - Added built-in `alibaba-token-plan-cn` provider backed by Alibaba Cloud Model Studio's Token Plan endpoint (`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`). Auth via env `ALIBABA_TOKEN_PLAN_API_KEY` or `auth.json` key `alibaba-token-plan-cn`. Models are pulled from `models.dev` (`alibaba-token-plan-cn` namespace) via `scripts/generate-models.ts`.
 - Added `withThinkingLevelOverrides(model, overrides)` helper to merge a per-model thinking-level override map at runtime. Consumed by `coding-agent` to apply `thinkingLevelMapOverrides` from `settings.json` so the TUI cycle, clamp, and provider request all see the merged map.
+- Added `OpenAIResponsesCompat.webSearch` flag. When enabled on an `openai-responses` model, the provider appends the built-in `{ type: "web_search" }` tool to requests so the model can perform server-side web search (OpenAI / DeepSeek Responses API). `convertResponsesTools` gains an `includeWebSearch` option, and stream parsing now tolerates `web_search_call` output items.
 
 ### Changed
 

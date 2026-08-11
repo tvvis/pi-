@@ -42,6 +42,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 	return {
 		sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+		webSearch: model.compat?.webSearch ?? false,
 	};
 }
 
@@ -252,8 +253,9 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		params.service_tier = options.serviceTier;
 	}
 
-	if (context.tools && context.tools.length > 0) {
-		params.tools = convertResponsesTools(context.tools);
+	const tools = convertResponsesTools(context.tools ?? [], { includeWebSearch: compat.webSearch });
+	if (tools.length > 0) {
+		params.tools = tools;
 	}
 
 	if (model.reasoning) {

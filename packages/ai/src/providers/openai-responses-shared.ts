@@ -81,6 +81,8 @@ export interface ConvertResponsesMessagesOptions {
 
 export interface ConvertResponsesToolsOptions {
 	strict?: boolean | null;
+	/** Append the built-in `web_search` tool (server-side web search) to the result. */
+	includeWebSearch?: boolean;
 }
 
 // =============================================================================
@@ -271,13 +273,17 @@ export function convertResponsesMessages<TApi extends Api>(
 
 export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesToolsOptions): OpenAITool[] {
 	const strict = options?.strict === undefined ? false : options.strict;
-	return tools.map((tool) => ({
+	const result: OpenAITool[] = tools.map((tool) => ({
 		type: "function",
 		name: tool.name,
 		description: tool.description,
 		parameters: tool.parameters as any, // TypeBox already generates JSON Schema
 		strict,
 	}));
+	if (options?.includeWebSearch) {
+		result.push({ type: "web_search" });
+	}
+	return result;
 }
 
 // =============================================================================
@@ -322,6 +328,9 @@ export async function processResponsesStream<TApi extends Api>(
 				};
 				output.content.push(currentBlock);
 				stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
+			} else if (item.type === "web_search_call") {
+				// Server-side web search call (OpenAI / DeepSeek). Executed by the API;
+				// results surface via subsequent output text. No local content block.
 			}
 		} else if (event.type === "response.reasoning_summary_part.added") {
 			if (currentItem && currentItem.type === "reasoning") {
@@ -488,6 +497,8 @@ export async function processResponsesStream<TApi extends Api>(
 
 				currentBlock = null;
 				stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
+			} else if (item.type === "web_search_call") {
+				// Server-side web search completed; no local block to finalize.
 			}
 		} else if (event.type === "response.completed") {
 			const response = event.response;

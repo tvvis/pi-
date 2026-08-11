@@ -350,6 +350,13 @@ export interface OpenAIResponsesCompat {
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
 	supportsLongCacheRetention?: boolean;
+	/**
+	 * Whether to enable the built-in `web_search` tool (server-side web search)
+	 * for this model. When true, the provider appends `{ type: "web_search" }` to
+	 * the request `tools` so the model can search the web during generation.
+	 * Supported by OpenAI and DeepSeek's Responses API. Default: false.
+	 */
+	webSearch?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */

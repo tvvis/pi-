@@ -1,5 +1,48 @@
 import { describe, expect, it } from "vitest";
-import { buildSubagentArgs, buildSubagentSessionName } from "../examples/extensions/subagent/index.ts";
+import {
+	buildSubagentArgs,
+	buildSubagentSessionName,
+	presetDisplayName,
+	presetNameFrom,
+	validateTypeAgentExclusivity,
+} from "../examples/extensions/subagent/index.ts";
+
+describe("subagent type/agent resolution", () => {
+	it("presetNameFrom: standard and omitted -> undefined (generic subagent)", () => {
+		expect(presetNameFrom("standard", undefined)).toBeUndefined();
+		expect(presetNameFrom(undefined, undefined)).toBeUndefined();
+	});
+
+	it("presetNameFrom: type names a preset", () => {
+		expect(presetNameFrom("websearch", undefined)).toBe("websearch");
+	});
+
+	it("presetNameFrom: agent is the legacy alias", () => {
+		expect(presetNameFrom(undefined, "scout")).toBe("scout");
+	});
+
+	it("presetDisplayName: falls back to label then subagent", () => {
+		expect(presetDisplayName("websearch", undefined, undefined)).toBe("websearch");
+		expect(presetDisplayName("standard", undefined, "research")).toBe("research");
+		expect(presetDisplayName(undefined, undefined, undefined)).toBe("subagent");
+	});
+
+	it("validateTypeAgentExclusivity: rejects type+agent at top level", () => {
+		expect(validateTypeAgentExclusivity({ type: "websearch", agent: "scout" })).toBeDefined();
+	});
+
+	it("validateTypeAgentExclusivity: rejects type+agent in tasks/chain items", () => {
+		expect(validateTypeAgentExclusivity({ tasks: [{ type: "websearch", agent: "scout" }] })).toBeDefined();
+		expect(validateTypeAgentExclusivity({ chain: [{ type: "websearch", agent: "scout" }] })).toBeDefined();
+	});
+
+	it("validateTypeAgentExclusivity: passes for valid combos", () => {
+		expect(validateTypeAgentExclusivity({ type: "standard" })).toBeUndefined();
+		expect(validateTypeAgentExclusivity({ type: "websearch" })).toBeUndefined();
+		expect(validateTypeAgentExclusivity({ agent: "scout" })).toBeUndefined();
+		expect(validateTypeAgentExclusivity({ tasks: [{ type: "websearch" }, { agent: "scout" }] })).toBeUndefined();
+	});
+});
 
 describe("subagent session naming", () => {
 	it("builds subagent:<agent> - <task>", () => {
@@ -105,5 +148,26 @@ describe("subagent child process args", () => {
 		expect(args).not.toContain("--tools");
 		expect(args).not.toContain("--no-session");
 		expect(args).toContain("--name");
+	});
+
+	it("passes --no-tools and --no-context-files when requested", () => {
+		const args = buildSubagentArgs({
+			agentName: "websearch",
+			task: "find latest news",
+			resolvedModel: "deepseek/deepseek-v4-flash",
+			tools: undefined,
+			parentSessionFile: undefined,
+			noSkills: false,
+			skills: undefined,
+			systemPrompt: undefined,
+			appendSystemPrompt: undefined,
+			noTools: true,
+			noContext: true,
+		});
+
+		expect(args).toContain("--no-tools");
+		expect(args).toContain("--no-context-files");
+		// No pi tool allowlist should be emitted alongside --no-tools.
+		expect(args).not.toContain("--tools");
 	});
 });

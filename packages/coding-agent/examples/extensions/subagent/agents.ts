@@ -8,6 +8,11 @@ import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
 
+/** Accept YAML booleans (`true`) or the string `"true"`. */
+function parseBoolean(value: unknown): boolean {
+	return value === true || value === "true";
+}
+
 export interface AgentConfig {
 	name: string;
 	description: string;
@@ -16,6 +21,14 @@ export interface AgentConfig {
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
+	/** Disable all pi function tools in the child (`--no-tools`). Server-side tools
+	 *  such as the Responses API `web_search` are unaffected (added by the provider). */
+	noTools?: boolean;
+	/** Skip project context files (AGENTS.md etc.) in the child (`--no-context-files`). */
+	noContext?: boolean;
+	/** Use the agent body as the child's sole system prompt (`--system-prompt`)
+	 *  instead of appending it to the default coding-agent prompt. */
+	replaceSystemPrompt?: boolean;
 }
 
 export interface AgentDiscoveryResult {
@@ -68,6 +81,9 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			systemPrompt: body,
 			source,
 			filePath,
+			noTools: parseBoolean(frontmatter.noTools),
+			noContext: parseBoolean(frontmatter.noContext),
+			replaceSystemPrompt: parseBoolean(frontmatter.replaceSystemPrompt),
 		});
 	}
 

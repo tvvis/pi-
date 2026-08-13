@@ -240,7 +240,32 @@ export class FooterComponent implements Component {
 		const remainder = statsLine.slice(statsLeft.length); // padding + rightSide
 		const dimRemainder = theme.fg("dim", remainder);
 
-		const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+		// Cache hit rate on the right side of the pwd line.
+		// Only shown when the session has cache data (cacheRead or cacheWrite > 0).
+		// input excludes cacheRead (Anthropic: input_tokens vs cache_read_input_tokens),
+		// so hit rate = cacheRead / (cacheRead + input).
+		const hasCacheData = totalCacheRead + totalCacheWrite > 0;
+		let pwdLine: string;
+		if (hasCacheData) {
+			const cacheTotal = totalCacheRead + totalInput;
+			const hitRate = cacheTotal > 0 ? Math.round((totalCacheRead / cacheTotal) * 100) : 0;
+			const cacheLabel = `chr ${hitRate}%`;
+			const cacheWidth = visibleWidth(cacheLabel);
+			const minPadding = 2;
+			const availableForPwd = width - minPadding - cacheWidth;
+			// Require enough room for pwd to stay meaningful (at least a char + "...");
+			// otherwise drop the hit rate and show pwd alone.
+			if (availableForPwd >= 4) {
+				const truncatedPwd = truncateToWidth(pwd, availableForPwd, "...");
+				const truncatedPwdWidth = visibleWidth(truncatedPwd);
+				const padding = " ".repeat(Math.max(0, width - truncatedPwdWidth - cacheWidth));
+				pwdLine = theme.fg("dim", truncatedPwd) + padding + theme.fg("dim", cacheLabel);
+			} else {
+				pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+			}
+		} else {
+			pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+		}
 		const lines = [pwdLine, dimStatsLeft + dimRemainder];
 
 		// Add extension statuses on a single line, sorted by key alphabetically

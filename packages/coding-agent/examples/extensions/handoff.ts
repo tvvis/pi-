@@ -18,11 +18,30 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { complete, type Message, type StopReason, type Tool, type ToolCall, Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	type Api,
+	complete,
+	type Message,
+	type Model,
+	type StopReason,
+	type Tool,
+	type ToolCall,
+	Type,
+} from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ModelRegistry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader, convertToLlm, getAgentDir, serializeConversation } from "@earendil-works/pi-coding-agent";
 
 const HANDOFF_TOOL_NAME = "write_handoff";
+
+/**
+ * Default model used to generate the handoff summary. The summary is a
+ * one-shot, context-heavy writing task, so it is pinned to a capable model
+ * rather than the session's current (possibly small/fast) model. If the
+ * preferred model is unavailable or has no auth configured, fall back to the
+ * current session model.
+ */
+const SUMMARY_MODEL_PROVIDER = "deepseek";
+const SUMMARY_MODEL_ID = "deepseek-v4-flash";
 
 const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for continuing, produce a handoff that lets a fresh session continue the work with zero context loss.
 
@@ -76,6 +95,20 @@ function forcedToolChoice(api: string, toolName: string): unknown {
 		default:
 			return undefined;
 	}
+}
+
+/**
+ * Resolve the model that generates the handoff summary. Pinned to
+ * `deepseek-v4-flash` by default (a one-shot, context-heavy writing task),
+ * falling back to the current session model when the preferred model is
+ * missing or has no auth configured.
+ */
+function resolveSummaryModel(registry: ModelRegistry, currentModel: Model<Api>): Model<Api> {
+	const preferred = registry.find(SUMMARY_MODEL_PROVIDER, SUMMARY_MODEL_ID);
+	if (preferred && registry.hasConfiguredAuth(preferred)) {
+		return preferred;
+	}
+	return currentModel;
 }
 
 function entryToMessage(entry: SessionEntry): AgentMessage | undefined {
@@ -318,6 +351,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const goal = args.trim();
+
+			// Generate the summary with a capable default model rather than the
+			// session's current model, which may be a small/fast model unsuited
+			// to the one-shot, context-heavy summarization task.
+			const summaryModel = resolveSummaryModel(ctx.modelRegistry, ctx.model);
+
 			const messages = getHandoffMessages(ctx.sessionManager.getBranch());
 
 			if (messages.length === 0) {
@@ -331,13 +370,13 @@ export default function (pi: ExtensionAPI) {
 
 			// Generate the handoff (progress doc + file path + continuation prompt).
 			const result = await ctx.ui.custom<HandoffGeneration | null>((tui, theme, _kb, done) => {
-				const loader = new BorderedLoader(tui, theme, `Generating handoff...`);
+				const loader = new BorderedLoader(tui, theme, `Generating handoff with ${summaryModel.name}...`);
 				loader.onAbort = () => done(null);
 
 				const doGenerate = async (): Promise<HandoffGeneration | null> => {
-					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
+					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(summaryModel);
 					if (!auth.ok || !auth.apiKey) {
-						throw new Error(auth.ok ? `No API key for ${ctx.model!.provider}` : auth.error);
+						throw new Error(auth.ok ? `No API key for ${summaryModel.provider}` : auth.error);
 					}
 
 					const goalSection = goal
@@ -357,23 +396,23 @@ export default function (pi: ExtensionAPI) {
 
 					// Set an explicit maxTokens so providers don't fall back to a low
 					// API default and truncate the handoff doc mid-output.
-					const maxTokens = ctx.model!.maxTokens > 0 ? ctx.model!.maxTokens : undefined;
+					const maxTokens = summaryModel.maxTokens > 0 ? summaryModel.maxTokens : undefined;
 
 					// Force the model to call `write_handoff` so the output is a
 					// structured tool call, not free-text markers the model may fail
 					// to produce. The choice is injected per-API via onPayload (the
 					// typed toolChoice option is not wired for every provider).
-					const toolChoice = forcedToolChoice(ctx.model!.api, HANDOFF_TOOL_NAME);
+					const toolChoice = forcedToolChoice(summaryModel.api, HANDOFF_TOOL_NAME);
 
 					// For Anthropic reasoning models, disable thinking: summarization
 					// needs none, and Anthropic rejects `tool_choice: { type: "tool" }`
 					// while extended thinking is enabled. (openai-completions already
 					// defaults to thinking disabled when no reasoningEffort is passed;
 					// openai-responses defaults to effort "none".)
-					const disableThinking = ctx.model!.api === "anthropic-messages" ? { thinkingEnabled: false } : {};
+					const disableThinking = summaryModel.api === "anthropic-messages" ? { thinkingEnabled: false } : {};
 
 					const response = await complete(
-						ctx.model!,
+						summaryModel,
 						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage], tools: [writeHandoffTool] },
 						{
 							apiKey: auth.apiKey,

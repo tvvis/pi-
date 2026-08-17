@@ -4,14 +4,20 @@
  * Summarizes the current session into a progress file at handoff/<name>.md (name chosen by the model),
  * then starts a new session with a short continuation prompt that points to that file.
  *
+ * The handoff is delivered through a forced `write_handoff` tool call rather than free-text
+ * markers. The tool call is forced via `tool_choice` (injected per-provider through onPayload),
+ * so the output is structurally constrained and does not depend on the model choosing to emit
+ * a specific text format. This avoids failures where an agentic model stops with `toolUse`
+ * intent (trying to "investigate" before writing) and never produces the markers.
+ *
  * Usage:
  *   /handoff                       - continue the current work
  *   /handoff implement phase two   - carry over context for a specific next goal
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { complete, type Message, type StopReason } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { complete, Type, type Api, type Message, type Model, type StopReason, type Tool, type ToolCall } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ModelRegistry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
 	BorderedLoader,
 	convertToLlm,
@@ -21,21 +27,84 @@ import {
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
+const HANDOFF_TOOL_NAME = "write_handoff";
+
+/**
+ * Default model used to generate the handoff summary. The summary is a
+ * one-shot, context-heavy writing task, so it is pinned to a capable model
+ * rather than the session's current (possibly small/fast) model. If the
+ * preferred model is unavailable or has no auth configured, fall back to the
+ * current session model.
+ */
+const SUMMARY_MODEL_PROVIDER = "deepseek";
+const SUMMARY_MODEL_ID = "deepseek-v4-flash";
+
 const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for continuing, produce a handoff that lets a fresh session continue the work with zero context loss.
 
 Derive everything from the conversation; do not invent facts. The progress doc must capture at minimum: the original goal, what was accomplished, the current state, ordered next steps (immediate action first), key files and why they matter, key decisions and rationale, and any gotchas / open questions / uncommitted git state the next session must know.
 
-You decide the doc's structure (Markdown) and a short descriptive file name. The doc is always written to handoff/<name>.md (relative to the project root), where <name> is a kebab-case slug you derive from the session's work (e.g. handoff/fix-login-bug.md). Do not use any other directory or path.
+Deliver the result by calling the \`${HANDOFF_TOOL_NAME}\` tool exactly once. Do not output any prose, preamble, or commentary - just the tool call. The tool takes three string arguments:
+- \`file\`: a kebab-case slug for the file name (e.g. "fix-login-bug"). No directory, no ".md" extension.
+- \`prompt\`: a SHORT continuation prompt for the new session that points to handoff/<file>.md and states the immediate next action. It must not duplicate the doc.
+- \`summary\`: the full progress document as Markdown.`;
 
-Then produce a SHORT continuation prompt for the new session that points to the file you chose and states the immediate next action. It must not duplicate the doc.
+/**
+ * Tool the model is forced to call to deliver the handoff. The schema constrains
+ * the three required fields; `tool_choice` (set via onPayload) constrains the
+ * model to actually call it.
+ */
+const writeHandoffTool: Tool = {
+	name: HANDOFF_TOOL_NAME,
+	description:
+		"Deliver the handoff result. Call exactly once with the progress doc (Markdown) in `summary`, a kebab-case file slug in `file`, and a short continuation prompt in `prompt`.",
+	parameters: Type.Object({
+		file: Type.String({
+			description: "Kebab-case slug for the handoff file name, e.g. 'fix-login-bug'. No directory, no '.md' extension.",
+		}),
+		prompt: Type.String({
+			description:
+				"A short continuation prompt for the new session pointing to handoff/<file>.md and stating the immediate next action. Do not duplicate the summary.",
+		}),
+		summary: Type.String({
+			description: "The full progress document as Markdown.",
+		}),
+	}),
+};
 
-Output EXACTLY this format and nothing else - no markdown code fence around the output, no preamble, no commentary, and no text after the summary:
+/**
+ * Per-API `tool_choice` payload that forces a call to `toolName`. Returned value
+ * is injected into the provider request body via onPayload (the typed `toolChoice`
+ * option is not wired for every provider, so onPayload is the uniform path).
+ * Returns undefined for APIs where forced tool choice is unsupported; for those
+ * we still register the tool and rely on the model calling it.
+ */
+function forcedToolChoice(api: string, toolName: string): unknown {
+	switch (api) {
+		case "openai-completions":
+			return { type: "function", function: { name: toolName } };
+		case "anthropic-messages":
+			return { type: "tool", name: toolName };
+		case "openai-responses":
+		case "azure-openai-responses":
+			return { type: "function", name: toolName };
+		default:
+			return undefined;
+	}
+}
 
-FILE: handoff/<name>.md
-===PROMPT===
-<short continuation prompt>
-===SUMMARY===
-<the full progress doc as Markdown>`;
+/**
+ * Resolve the model that generates the handoff summary. Pinned to
+ * `deepseek-v4-flash` by default (a one-shot, context-heavy writing task),
+ * falling back to the current session model when the preferred model is
+ * missing or has no auth configured.
+ */
+function resolveSummaryModel(registry: ModelRegistry, currentModel: Model<Api>): Model<Api> {
+	const preferred = registry.find(SUMMARY_MODEL_PROVIDER, SUMMARY_MODEL_ID);
+	if (preferred && registry.hasConfiguredAuth(preferred)) {
+		return preferred;
+	}
+	return currentModel;
+}
 
 function entryToMessage(entry: SessionEntry): AgentMessage | undefined {
 	if (entry.type === "message") {
@@ -85,6 +154,8 @@ interface HandoffGeneration {
 	text: string;
 	thinking: string;
 	stopReason: StopReason;
+	/** First tool call in the response, if any. Expected to be `write_handoff`. */
+	toolCall?: ToolCall;
 	errorMessage?: string;
 }
 
@@ -92,159 +163,129 @@ type ParseResult =
 	| { ok: true; parsed: ParsedHandoff; notes: string[] }
 	| { ok: false; diagnostic: string };
 
-function lineText(body: string, index: number): string {
-	const end = body.indexOf("\n", index);
-	return end >= 0 ? body.slice(index, end) : body.slice(index);
-}
-
-interface MarkerHit {
-	index: number;
-	line: string;
-	loose: boolean;
-}
-
-function findMarker(body: string, keyword: "PROMPT" | "SUMMARY"): MarkerHit | null {
-	// Strict: === KEYWORD === with tolerant whitespace (handles indentation,
-	// trailing spaces, and CRLF). Requires >=2 '=' on each side so prose
-	// mentions of "PROMPT"/"SUMMARY" never match.
-	const strict = body.match(new RegExp(`^[ \\t]*={2,}[ \\t]*${keyword}[ \\t]*={2,}[ \\t]*$`, "im"));
-	if (strict && strict.index != null) {
-		return { index: strict.index, line: lineText(body, strict.index), loose: false };
-	}
-	// Loose fallback (only when the === style is absent): the keyword is the
-	// only alphabetic token on its line, possibly wrapped in markdown /
-	// box-drawing decoration. Matches "## SUMMARY", "**PROMPT**",
-	// "--- SUMMARY ---", "[PROMPT]", "PROMPT:" while rejecting prose lines
-	// that contain other words (e.g. "## Summary of work").
-	const loose = body.match(new RegExp(`^[ \\t]*[^A-Za-z\\n]*${keyword}[^A-Za-z\\n]*[ \\t]*$`, "im"));
-	if (loose && loose.index != null) {
-		return { index: loose.index, line: lineText(body, loose.index), loose: true };
-	}
-	return null;
-}
-
 function truncate(text: string, max: number): string {
 	if (text.length <= max) return text;
 	return `${text.slice(0, max)}…<+${text.length - max} chars>`;
 }
 
-interface DiagnosticInput {
+interface ToolCallDiagnosticInput {
 	reason: string;
-	rawLength: number;
-	fenceStripped: boolean;
-	promptMarker: MarkerHit | null;
-	summaryMarker: MarkerHit | null;
-	body: string;
 	stopReason?: StopReason;
+	toolCall?: ToolCall;
+	file: string;
+	prompt: string;
+	summary: string;
+	text?: string;
 	thinking?: string;
 }
 
-function buildDiagnostic(d: DiagnosticInput): string {
+function buildToolCallDiagnostic(d: ToolCallDiagnosticInput): string {
 	const out: string[] = [];
 	out.push("=== HANDOFF PARSE FAILURE DIAGNOSTIC ===");
 	out.push("");
 	out.push(`Reason: ${d.reason}`);
-	out.push(`Raw output length: ${d.rawLength} chars`);
+	out.push(`Mode: structured tool call (${HANDOFF_TOOL_NAME})`);
 	if (d.stopReason) {
 		const hint =
 			d.stopReason === "length"
-				? " (output was truncated by the provider - the handoff exceeded the output token limit)"
+				? " (output was truncated by the provider - the tool arguments exceeded the output token limit)"
 				: d.stopReason === "error"
 					? " (provider reported an error)"
 					: "";
 		out.push(`Model stopReason: ${d.stopReason}${hint}`);
 	}
-	out.push(`Surrounding code fence stripped: ${d.fenceStripped}`);
-	out.push("");
-	const fmt = (m: MarkerHit | null) =>
-		m ? `found at index ${m.index} (loose=${m.loose}); line=${JSON.stringify(m.line)}` : "NOT FOUND";
-	out.push(`PROMPT marker:  ${fmt(d.promptMarker)}`);
-	out.push(`SUMMARY marker: ${fmt(d.summaryMarker)}`);
+	out.push(
+		`Tool call present: ${d.toolCall ? `yes (name=${JSON.stringify(d.toolCall.name)})` : "no"}`,
+	);
+	if (d.toolCall) {
+		out.push(`Tool argument keys: ${JSON.stringify(Object.keys(d.toolCall.arguments ?? {}))}`);
+	}
+	out.push(
+		`file length: ${d.file.length}, prompt length: ${d.prompt.length}, summary length: ${d.summary.length}`,
+	);
 	out.push("");
 	if (d.thinking && d.thinking.trim()) {
 		out.push("--- Model thinking preview (first 1500 chars) ---");
 		out.push(truncate(d.thinking, 1500));
 		out.push("");
 	}
-	out.push("--- Body preview (first 800 chars) ---");
-	out.push(truncate(d.body, 800));
-	out.push("");
-	out.push("--- Body tail (last 400 chars) ---");
-	out.push(d.body.length > 400 ? d.body.slice(-400) : d.body);
-	out.push("");
+	if (d.toolCall) {
+		out.push("--- toolCall.arguments (first 2000 chars) ---");
+		try {
+			out.push(truncate(JSON.stringify(d.toolCall.arguments, null, 2), 2000));
+		} catch {
+			out.push("(could not serialize arguments)");
+		}
+		out.push("");
+	} else {
+		// No tool call: show whatever text/thinking the model emitted instead, so
+		// the "did not call write_handoff" case is diagnosable (e.g. a provider
+		// that ignored tool_choice and produced a preamble or free text).
+		out.push("--- Model text output (first 800 chars) ---");
+		out.push(truncate(d.text ?? "(empty)", 800));
+		out.push("");
+	}
 	out.push("=== END DIAGNOSTIC ===");
 	return out.join("\n");
 }
 
+/**
+ * Parse the handoff from the forced `write_handoff` tool call. With `tool_choice`
+ * enforced, the response always contains the tool call; the only failure modes are
+ * a wrong tool name, missing/empty arguments, or a provider that ignored
+ * `tool_choice` and emitted no tool call at all.
+ */
 function parseHandoff(gen: HandoffGeneration): ParseResult {
-	const notes: string[] = [];
-	const text = gen.text;
-	const rawLength = text.length;
+	const fail = (reason: string, toolCall: ToolCall | undefined, file: string, prompt: string, summary: string): ParseResult => ({
+		ok: false,
+		diagnostic: buildToolCallDiagnostic({
+			reason,
+			stopReason: gen.stopReason,
+			toolCall,
+			file,
+			prompt,
+			summary,
+			text: gen.text,
+			thinking: gen.thinking,
+		}),
+	});
 
-	let fenceStripped = false;
-	let body = text.trim();
-	const fence = body.match(/^```[^\n]*\n([\s\S]*?)\n?```\s*$/);
-	if (fence) {
-		body = fence[1].trim();
-		fenceStripped = true;
-		notes.push("Stripped a surrounding markdown code fence.");
+	if (!gen.toolCall) {
+		return fail(
+			`Model did not call the ${HANDOFF_TOOL_NAME} tool. The selected provider/api may not support forced tool calls (tool_choice was not enforced).`,
+			undefined,
+			"",
+			"",
+			"",
+		);
 	}
 
-	const promptMarker = findMarker(body, "PROMPT");
-	const summaryMarker = findMarker(body, "SUMMARY");
-
-	const fail = (reason: string): ParseResult => {
-		const fullReason =
-			gen.stopReason === "length" ? `${reason} [stopReason=length: output truncated]` : reason;
-		return {
-			ok: false,
-			diagnostic: buildDiagnostic({
-				reason: fullReason,
-				rawLength,
-				fenceStripped,
-				promptMarker,
-				summaryMarker,
-				body,
-				stopReason: gen.stopReason,
-				thinking: gen.thinking,
-			}),
-		};
-	};
-
-	if (!body) {
-		return fail("Model returned no text content (output is empty).");
-	}
-	if (!promptMarker) return fail("PROMPT marker not found.");
-	if (!summaryMarker) return fail("SUMMARY marker not found.");
-	if (promptMarker.index >= summaryMarker.index) {
-		return fail("PROMPT marker appears at or after SUMMARY marker (wrong order).");
+	if (gen.toolCall.name !== HANDOFF_TOOL_NAME) {
+		return fail(
+			`Model called tool ${JSON.stringify(gen.toolCall.name)} but expected ${JSON.stringify(HANDOFF_TOOL_NAME)}.`,
+			gen.toolCall,
+			"",
+			"",
+			"",
+		);
 	}
 
-	if (promptMarker.loose) notes.push(`Used loose match for PROMPT marker: ${JSON.stringify(promptMarker.line)}.`);
-	if (summaryMarker.loose) notes.push(`Used loose match for SUMMARY marker: ${JSON.stringify(summaryMarker.line)}.`);
+	const args = (gen.toolCall.arguments ?? {}) as { file?: unknown; prompt?: unknown; summary?: unknown };
+	const file = typeof args.file === "string" ? args.file.trim() : "";
+	const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+	const summary = typeof args.summary === "string" ? args.summary.trim() : "";
 
-	const pIdx = promptMarker.index;
-	const sIdx = summaryMarker.index;
-
-	const header = body.slice(0, pIdx);
-	const promptLineEnd = body.indexOf("\n", pIdx);
-	const prompt = promptLineEnd >= 0 ? body.slice(promptLineEnd + 1, sIdx).trim() : "";
-	const summaryLineEnd = body.indexOf("\n", sIdx);
-	const summary = summaryLineEnd >= 0 ? body.slice(summaryLineEnd + 1).trim() : "";
-
-	// FILE line in the header. Case-insensitive; tolerate markdown decoration
-	// (## FILE, **FILE**) and surrounding backticks/quotes around the path.
-	const fileMatch = header.match(/^[ \t]*[#*>`]*[ \t]*file[ \t]*:[ \t]*([^\n]+)/im);
-	let file: string | undefined;
-	if (fileMatch) {
-		file = fileMatch[1].replace(/[`"'*#]/g, "").trim();
+	if (!file) {
+		return fail(`Tool call ${HANDOFF_TOOL_NAME} is missing a non-empty \`file\` argument.`, gen.toolCall, file, prompt, summary);
+	}
+	if (!prompt) {
+		return fail(`Tool call ${HANDOFF_TOOL_NAME} is missing a non-empty \`prompt\` argument.`, gen.toolCall, file, prompt, summary);
+	}
+	if (!summary) {
+		return fail(`Tool call ${HANDOFF_TOOL_NAME} is missing a non-empty \`summary\` argument.`, gen.toolCall, file, prompt, summary);
 	}
 
-	if (!file) return fail("FILE path not found in the header before the PROMPT marker.");
-	if (!prompt) return fail("Continuation prompt is empty (nothing between PROMPT and SUMMARY markers).");
-	if (!summary) return fail("Summary doc is empty (nothing after the SUMMARY marker).");
-
-	return { ok: true, parsed: { file, prompt, summary }, notes };
+	return { ok: true, parsed: { file, prompt, summary }, notes: [`Parsed from ${HANDOFF_TOOL_NAME} tool call.`] };
 }
 
 /**
@@ -283,6 +324,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const goal = args.trim();
+
+			// Generate the summary with a capable default model rather than the
+			// session's current model, which may be a small/fast model unsuited
+			// to the one-shot, context-heavy summarization task.
+			const summaryModel = resolveSummaryModel(ctx.modelRegistry, ctx.model);
+
 			const messages = getHandoffMessages(ctx.sessionManager.getBranch());
 
 			if (messages.length === 0) {
@@ -296,13 +343,13 @@ export default function (pi: ExtensionAPI) {
 
 			// Generate the handoff (progress doc + file path + continuation prompt).
 			const result = await ctx.ui.custom<HandoffGeneration | null>((tui, theme, _kb, done) => {
-				const loader = new BorderedLoader(tui, theme, `Generating handoff...`);
+				const loader = new BorderedLoader(tui, theme, `Generating handoff with ${summaryModel.name}...`);
 				loader.onAbort = () => done(null);
 
 				const doGenerate = async (): Promise<HandoffGeneration | null> => {
-					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
+					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(summaryModel);
 					if (!auth.ok || !auth.apiKey) {
-						throw new Error(auth.ok ? `No API key for ${ctx.model!.provider}` : auth.error);
+						throw new Error(auth.ok ? `No API key for ${summaryModel.provider}` : auth.error);
 					}
 
 					const goalSection = goal
@@ -321,15 +368,38 @@ export default function (pi: ExtensionAPI) {
 					};
 
 					// Set an explicit maxTokens so providers don't fall back to a low
-					// API default and truncate the handoff doc mid-output (which was
-					// the dominant cause of "Failed to parse handoff output": the
-					// ===SUMMARY=== marker never arrived).
-					const maxTokens = ctx.model!.maxTokens > 0 ? ctx.model!.maxTokens : undefined;
+					// API default and truncate the handoff doc mid-output.
+					const maxTokens = summaryModel.maxTokens > 0 ? summaryModel.maxTokens : undefined;
+
+					// Force the model to call `write_handoff` so the output is a
+					// structured tool call, not free-text markers the model may fail
+					// to produce. The choice is injected per-API via onPayload (the
+					// typed toolChoice option is not wired for every provider).
+					const toolChoice = forcedToolChoice(summaryModel.api, HANDOFF_TOOL_NAME);
+
+					// For Anthropic reasoning models, disable thinking: summarization
+					// needs none, and Anthropic rejects `tool_choice: { type: "tool" }`
+					// while extended thinking is enabled. (openai-completions already
+					// defaults to thinking disabled when no reasoningEffort is passed;
+					// openai-responses defaults to effort "none".)
+					const disableThinking = summaryModel.api === "anthropic-messages" ? { thinkingEnabled: false } : {};
 
 					const response = await complete(
-						ctx.model!,
-						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
-						{ apiKey: auth.apiKey, headers: auth.headers, signal: loader.signal, maxTokens },
+						summaryModel,
+						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage], tools: [writeHandoffTool] },
+						{
+							apiKey: auth.apiKey,
+							headers: auth.headers,
+							signal: loader.signal,
+							maxTokens,
+							...disableThinking,
+							onPayload: (payload) => {
+								if (toolChoice !== undefined) {
+									(payload as Record<string, unknown>).tool_choice = toolChoice;
+								}
+								return payload;
+							},
+						},
 					);
 
 					if (response.stopReason === "aborted") {
@@ -344,8 +414,11 @@ export default function (pi: ExtensionAPI) {
 						.filter((c): c is { type: "thinking"; thinking: string } => c.type === "thinking")
 						.map((c) => c.thinking)
 						.join("\n");
+					const toolCall = response.content.find(
+						(c): c is ToolCall => c.type === "toolCall",
+					);
 
-					const gen: HandoffGeneration = { text, thinking, stopReason: response.stopReason };
+					const gen: HandoffGeneration = { text, thinking, stopReason: response.stopReason, toolCall };
 					if (response.errorMessage) gen.errorMessage = response.errorMessage;
 					return gen;
 				};
@@ -393,7 +466,9 @@ export default function (pi: ExtensionAPI) {
 				const dumpPath = handoffDumpPath();
 				await writeFile(
 					dumpPath,
-					`${parseResult.diagnostic}\n\n=== RAW MODEL OUTPUT ===\n${result.text}\n`,
+					`${parseResult.diagnostic}\n\n=== RAW MODEL OUTPUT ===\n${result.text}\n\n=== RAW TOOL CALL ===\n${
+						result.toolCall ? JSON.stringify(result.toolCall, null, 2) : "(none)"
+					}\n`,
 					"utf8",
 				);
 				console.error(`[handoff] parse failed.\n${parseResult.diagnostic}\nRaw output dumped to ${dumpPath}`);

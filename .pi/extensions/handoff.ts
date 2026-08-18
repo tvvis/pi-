@@ -36,8 +36,8 @@ const HANDOFF_TOOL_NAME = "write_handoff";
  * preferred model is unavailable or has no auth configured, fall back to the
  * current session model.
  */
-const SUMMARY_MODEL_PROVIDER = "deepseek";
-const SUMMARY_MODEL_ID = "deepseek-v4-flash";
+const SUMMARY_MODEL_PROVIDER = "minimax-cn";
+const SUMMARY_MODEL_ID = "MiniMax-M3";
 
 const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for continuing, produce a handoff that lets a fresh session continue the work with zero context loss.
 
@@ -94,7 +94,7 @@ function forcedToolChoice(api: string, toolName: string): unknown {
 
 /**
  * Resolve the model that generates the handoff summary. Pinned to
- * `deepseek-v4-flash` by default (a one-shot, context-heavy writing task),
+ * `minimax-cn/MiniMax-M3` by default (a one-shot, context-heavy writing task),
  * falling back to the current session model when the preferred model is
  * missing or has no auth configured.
  */

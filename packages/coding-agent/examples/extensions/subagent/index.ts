@@ -14,7 +14,8 @@
  *   1. Per-item model in parallel/chain
  *   2. Call-site model
  *   3. Agent frontmatter `model:`
- *   4. Parent's `~/.pi/agent/settings.json` (`defaultProvider`/`defaultModel`)
+ *   4. Subagent default (`SUBAGENT_DEFAULT_MODEL` below), kept separate from
+ *      the parent session's settings.json default
  *   5. pi's built-in default (no `--model` flag)
  *
  * Uses JSON mode to capture structured output from subagents.
@@ -44,28 +45,12 @@ const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
 /**
- * Resolve the parent's default model from `settings.json` (project overrides global).
- * Returns `undefined` when neither file is readable or `defaultModel` is unset.
+ * Default model for subagent invocations. Kept independent of the parent
+ * session's `~/.pi/agent/settings.json` `defaultProvider`/`defaultModel` so
+ * subagent behavior does not drift with the parent's selected model. Override
+ * per-invocation via `model:` at the call site or per-item in parallel/chain.
  */
-function resolveDefaultModelFromSettings(cwd: string): string | undefined {
-	const candidates = [path.join(getAgentDir(), "settings.json"), path.join(cwd, ".pi", "settings.json")];
-	for (const filePath of candidates) {
-		if (!existsSync(filePath)) continue;
-		try {
-			const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as {
-				defaultProvider?: unknown;
-				defaultModel?: unknown;
-			};
-			const model = typeof parsed.defaultModel === "string" ? parsed.defaultModel.trim() : "";
-			if (!model) continue;
-			const provider = typeof parsed.defaultProvider === "string" ? parsed.defaultProvider.trim() : "";
-			return provider ? `${provider}/${model}` : model;
-		} catch {
-			// Try the next candidate.
-		}
-	}
-	return undefined;
-}
+const SUBAGENT_DEFAULT_MODEL = "minimax-cn/MiniMax-M3";
 
 /**
  * Read the model list the parent configured in `settings.json` (`enabledModels`).
@@ -731,7 +716,7 @@ const SubagentParams = Type.Object({
 	model: Type.Optional(
 		Type.String({
 			description:
-				"Model override (e.g. 'provider/model-id'). Falls back to the call-site, then the agent frontmatter, then settings.json defaultModel, then pi's built-in default.",
+				"Model override (e.g. 'provider/model-id'). Falls back to the call-site, then the agent frontmatter, then SUBAGENT_DEFAULT_MODEL, then pi's built-in default.",
 		}),
 	),
 	tools: Type.Optional(
@@ -780,7 +765,7 @@ export default function (pi: ExtensionAPI) {
 			"The parent controls the child's skills (`skills`/`noSkills`), context (`systemPrompt`/`appendSystemPrompt`), tools, and model; per-item overrides apply in parallel/chain.",
 			"Modes: single (task), parallel (tasks array), chain (sequential with {previous} placeholder).",
 			'Named agent presets are discovered from ~/.pi/agent/agents (default scope "user"); set agentScope: "both" (or "project") to include .pi/agents.',
-			"Model resolution (highest first): per-item model, call-site `model`, agent frontmatter `model`, then settings.json defaultProvider/defaultModel, then pi's built-in default.",
+			"Model resolution (highest first): per-item model, call-site `model`, agent frontmatter `model`, then SUBAGENT_DEFAULT_MODEL (kept separate from settings.json), then pi's built-in default.",
 			availableModelsDescription,
 		]
 			.filter(Boolean)
@@ -792,7 +777,6 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
-			const defaultModelFromSettings = resolveDefaultModelFromSettings(ctx.cwd);
 			// Parent session file (undefined when the parent runs with --no-session).
 			// Each child session links back to this same parent so /resume groups them.
 			const parentSessionFile = ctx.sessionManager.getSessionFile();
@@ -912,7 +896,7 @@ export default function (pi: ExtensionAPI) {
 						onUpdate: chainUpdate,
 						makeDetails: makeDetails("chain"),
 						config: mergeSubagentConfig(baseConfig, step),
-						defaultModel: defaultModelFromSettings,
+						defaultModel: SUBAGENT_DEFAULT_MODEL,
 						parentSessionFile,
 					});
 					results.push(result);
@@ -993,7 +977,7 @@ export default function (pi: ExtensionAPI) {
 						},
 						makeDetails: makeDetails("parallel"),
 						config: mergeSubagentConfig(baseConfig, t),
-						defaultModel: defaultModelFromSettings,
+						defaultModel: SUBAGENT_DEFAULT_MODEL,
 						parentSessionFile,
 					});
 					allResults[index] = result;
@@ -1032,7 +1016,7 @@ export default function (pi: ExtensionAPI) {
 					onUpdate,
 					makeDetails: makeDetails("single"),
 					config: baseConfig,
-					defaultModel: defaultModelFromSettings,
+					defaultModel: SUBAGENT_DEFAULT_MODEL,
 					parentSessionFile,
 				});
 				const isError = isFailedResult(result);

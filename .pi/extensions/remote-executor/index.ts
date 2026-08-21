@@ -1,15 +1,23 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
-import { ansibleExec, ansibleUpload, type ExecResult } from "./ansible.ts";
+import {
+  ansibleCleanupJob,
+  ansibleExec,
+  ansibleExecDetached,
+  ansibleUpload,
+  ansibleUploadBlob,
+  detachedJobPaths,
+  type ExecResult,
+} from "./ansible.ts";
 import { highlightLine, highlightShell } from "./highlight.ts";
 
 // ---------------------------------------------------------------------------
-// MD5 helpers — used by file_upload to verify integrity end-to-end so the
+// MD5 helpers - used by file_upload to verify integrity end-to-end so the
 // agent never has to run a separate md5sum on either side.
 // ---------------------------------------------------------------------------
 
@@ -70,12 +78,18 @@ interface RunScriptDetails {
   source: string;       // script path or "inline"
   host: string;
   remotePath: string;
-  exitCode: number;
+  exitCode: number | null;   // null when the script did not finish (timeout/aborted)
   stdout: string;
   stderr: string;
   assertions: AssertionResult[];
   allAssertionsPassed: boolean;
+  status: "completed" | "timeout" | "aborted";
+  remotePid?: string;
+  logPaths?: { out: string; err: string; exit: string; pid: string };
 }
+
+/** Default wall-clock budget (seconds) for a run_script call when `timeout` is omitted. */
+const DEFAULT_TIMEOUT_SEC = 600;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,107 +131,120 @@ function parseAssertions(
   return out;
 }
 
-async function runRemoteScript(
+async function runDetached(
   host: string,
   scriptContent: string,
-  scriptPath: string,
-  remotePath: string,
+  source: string,
+  mode: "script" | "command",
+  timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<{ output: string; details: RunScriptDetails }> {
   const parsed = parseAssertions(scriptContent);
 
+  // Command mode: strip assertion lines before execution. Script mode runs
+  // the file as-is (assertions are parsed separately, never passed to bash).
+  const body =
+    mode === "command"
+      ? scriptContent
+          .split("\n")
+          .filter((line) => !line.match(/^\s*#\s*@assert:/))
+          .join("\n")
+      : scriptContent;
+
+  const jobId = `rs_${Date.now().toString(36)}_${randomBytes(3).toString("hex")}`;
+  const paths = detachedJobPaths(jobId);
+
   try {
-    await ansibleUpload(host, scriptPath, remotePath, signal);
+    await ansibleUploadBlob(host, new Blob([body]), `${jobId}.sh`, paths.script, signal);
   } catch (err) {
     throw new Error(`Upload failed: ${formatError(err)}`);
   }
 
-  let result: ExecResult;
-  try {
-    result = await ansibleExec(host, `bash ${remotePath}`, signal);
-  } catch (err) {
-    throw new Error(`Remote execution failed: ${formatError(err)}`);
+  const outcome = await ansibleExecDetached(host, paths, { timeoutMs, signal });
+
+  // Assertions check stable post-run state, so only run them once the script
+  // has actually finished. While still running (timeout/aborted) there is
+  // nothing meaningful to assert.
+  let assertions: AssertionResult[] = [];
+  let allAssertionsPassed = true;
+  if (outcome.status === "completed") {
+    ({ assertions, allAssertionsPassed } = await runAssertions(host, parsed, signal));
   }
-
-  const { assertions, allAssertionsPassed } = await runAssertions(
-    host,
-    parsed,
-    signal,
-  );
-
-  const output = buildOutput(
-    `Script: ${scriptPath}`,
-    remotePath,
-    result,
-    assertions,
-    allAssertionsPassed,
-  );
 
   const details: RunScriptDetails = {
-    mode: "script",
-    source: scriptPath,
+    mode,
+    source,
     host,
-    remotePath,
-    exitCode: result.status,
-    stdout: result.stdout,
-    stderr: result.stderr,
+    remotePath: paths.script,
+    exitCode: outcome.status === "completed" ? outcome.exitCode : null,
+    stdout: outcome.status === "completed" ? outcome.stdout : outcome.partialStdout,
+    stderr: outcome.status === "completed" ? outcome.stderr : outcome.partialStderr,
     assertions,
     allAssertionsPassed,
+    status: outcome.status,
+    remotePid: outcome.status === "completed" ? undefined : outcome.pid,
+    logPaths: { out: paths.out, err: paths.err, exit: paths.exit, pid: paths.pid },
   };
 
-  if (!allAssertionsPassed || (!!result.stderr && assertions.length === 0)) {
-    throw Object.assign(new Error(output), { runScriptDetails: details });
+  if (outcome.status === "completed") {
+    await ansibleCleanupJob(host, paths, signal);
+    const output = buildOutput(
+      mode === "script" ? `Script: ${source}` : "Command",
+      paths.script,
+      { status: outcome.exitCode, stdout: outcome.stdout, stderr: outcome.stderr },
+      assertions,
+      allAssertionsPassed,
+    );
+    if (!allAssertionsPassed || (!!outcome.stderr && assertions.length === 0)) {
+      throw Object.assign(new Error(output), { toolResultDetails: details });
+    }
+    return { output, details };
   }
 
-  return { output, details };
+  // timeout or aborted: keep artifact files so the caller can re-poll/kill.
+  // Report as an error (isError) but with structured details so callers can
+  // distinguish "still running" from a real script failure.
+  const output = buildTimeoutOutput(details, timeoutMs);
+  throw Object.assign(new Error(output), { toolResultDetails: details });
 }
 
-async function runRemoteCommand(
-  host: string,
-  command: string,
-  signal?: AbortSignal,
-): Promise<{ output: string; details: RunScriptDetails }> {
-  const parsed = parseAssertions(command);
-
-  // Strip assertion lines from the command body before execution
-  const bodyLines = command
-    .split("\n")
-    .filter((line) => !line.match(/^\s*#\s*@assert:/));
-  const body = bodyLines.join("\n").trim();
-
-  let result: ExecResult;
-  try {
-    result = await ansibleExec(host, body, signal);
-  } catch (err) {
-    throw new Error(`Remote execution failed: ${formatError(err)}`);
+function buildTimeoutOutput(details: RunScriptDetails, timeoutMs: number): string {
+  const label = details.mode === "script" ? `Script: ${details.source}` : "Command";
+  const kind = details.status === "timeout" ? "TIMEOUT" : "ABORTED";
+  const out: string[] = [];
+  out.push(`--- ${label} --- (${kind})`);
+  out.push(`Remote: ${details.remotePath}`);
+  if (details.status === "timeout") {
+    out.push(
+      `Status: script still running on remote after ${Math.round(timeoutMs / 1000)}s (timeout reached).`,
+    );
+  } else {
+    out.push(`Status: agent aborted; script still running on remote.`);
   }
+  if (details.remotePid) {
+    out.push(
+      `PID: ${details.remotePid}  (stop: kill ${details.remotePid}, force: kill -9 ${details.remotePid})`,
+    );
+  }
+  if (details.logPaths) {
+    out.push(
+      `Logs: out=${details.logPaths.out} err=${details.logPaths.err} exit=${details.logPaths.exit}`,
+    );
+    out.push(
+      `Re-check when finished: run_script command -> "cat '${details.logPaths.exit}'; echo ---OUT---; cat '${details.logPaths.out}'; echo ---ERR---; cat '${details.logPaths.err}'"`,
+    );
+  }
+  out.push(`Assertions: skipped (script did not finish).`);
 
-  const { assertions, allAssertionsPassed } = await runAssertions(
-    host,
-    parsed,
-    signal,
+  out.push(`\n[partial stdout]`);
+  out.push(details.stdout.trimEnd() || "(none)");
+  out.push(`\n[partial stderr]`);
+  out.push(details.stderr.trimEnd() || "(none)");
+
+  out.push(
+    `\nNOTE: This is a ${kind}, not a script failure. The script is still running on the remote. Do not assume it succeeded or failed.`,
   );
-
-  const remotePath = `(inline command)`;
-  const output = buildOutput("Command", remotePath, result, assertions, allAssertionsPassed);
-
-  const details: RunScriptDetails = {
-    mode: "command",
-    source: "inline",
-    host,
-    remotePath,
-    exitCode: result.status,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    assertions,
-    allAssertionsPassed,
-  };
-
-  if (!allAssertionsPassed || (!!result.stderr && assertions.length === 0)) {
-    throw Object.assign(new Error(output), { runScriptDetails: details });
-  }
-
-  return { output, details };
+  return out.join("\n");
 }
 
 async function runAssertions(
@@ -305,18 +332,20 @@ export default function (pi: ExtensionAPI) {
     name: "run_script",
     label: "Run Script",
     description:
-      "Execute a bash script or inline command on a remote host and run # @assert: assertions. Use path for existing script files (uploads and executes remotely), or command for inline commands (executes directly, no upload).",
+      "Execute a bash script or inline command on a remote host and run # @assert: assertions. This is the ONLY supported way to run anything on remote hosts: the tool talks directly to the host's remote-execution agent over its management port, so SSH must never be used (no `ssh` from bash; use file_upload to copy files instead of `scp`). Use path for existing script files (uploads and executes remotely), or command for inline commands (executes directly, no upload). Scripts run detached on the remote: a long script is polled to completion and never killed by the HTTP layer; the optional timeout (default 600s) bounds the whole call and, if exceeded, reports the still-running PID and log paths instead of a false failure.",
     promptSnippet:
-      "Upload and execute a bash script or inline command on a remote host with assertion-based validation",
+      "Run bash on a remote host with assertion-based validation - the only remote-execution channel; never use SSH",
     promptGuidelines: [
-      "For the full workflow, host selection rules, and assertion patterns, load the `script-validator` skill.",
-      "Use `path` for any multi-step work: write the script to a local file first, then call run_script with path. Do not embed scripts in inline commands via heredoc (`cat > x.sh <<EOF` / `tee` / `base64 -d | bash`) — the upload path is the only supported way to run a non-trivial script.",
+      "run_script is the ONLY mechanism for remote execution. Never use `ssh`, `scp`, or any local bash command to run or copy things on remote hosts: every remote command goes through run_script, every file transfer through file_upload.",
+      "Use `path` for any multi-step work: write the script to a local file first, then call run_script with path. Do not embed scripts in inline commands via heredoc (`cat > x.sh <<EOF` / `tee` / `base64 -d | bash`) - the upload path is the only supported way to run a non-trivial script.",
       "Use `command` only for short, throwaway shell snippets and one-shot `# @assert:` checks. For multi-step procedures, make multiple `command` calls (or switch to `path`).",
+      "Pass `timeout` (seconds) for long-running scripts. The default is 600s; the script runs detached so a timeout does NOT kill it - the result reports the still-running PID and log paths. Re-check later with a `command` call that cats the exit/log files; do not assume a timeout means success or failure.",
     ],
     renderShell: "self",
     parameters: Type.Object({
       host: Type.String({
-        description: "Remote host",
+        description:
+          "Remote host to execute on. Bare hostname or IP only; the tool connects to the host's remote-execution agent directly, so do not include user@, ports, or ssh options.",
       }),
       path: Type.Optional(
         Type.String({
@@ -330,6 +359,12 @@ export default function (pi: ExtensionAPI) {
             "Inline command(s) to execute on the remote server. Supports multiline and # @assert: lines. Use for one-off commands without creating a file.",
         }),
       ),
+      timeout: Type.Optional(
+        Type.Number({
+          description:
+            "Overall timeout in seconds for the whole call (upload + run + assertions). Default 600. 0 = no timeout (poll until the agent aborts). The script runs detached; on timeout it keeps running and the result reports the still-running PID and log paths instead of failing.",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (!params.path && !params.command) {
@@ -340,11 +375,19 @@ export default function (pi: ExtensionAPI) {
       }
 
       const host = params.host;
+      const timeoutSec =
+        typeof params.timeout === "number" && params.timeout >= 0
+          ? params.timeout
+          : DEFAULT_TIMEOUT_SEC;
+      const timeoutMs = timeoutSec === 0 ? 0 : timeoutSec * 1000;
 
       if (params.command !== undefined) {
-        const { output, details } = await runRemoteCommand(
+        const { output, details } = await runDetached(
           host,
           params.command,
+          "inline",
+          "command",
+          timeoutMs,
           signal,
         );
         return {
@@ -354,8 +397,6 @@ export default function (pi: ExtensionAPI) {
       }
 
       const scriptPath = resolve(ctx.cwd, params.path!);
-      const scriptName = basename(scriptPath);
-      const remotePath = `/opt/qihoo/ansible-agent/${scriptName}`;
 
       let scriptContent: string;
       try {
@@ -365,11 +406,12 @@ export default function (pi: ExtensionAPI) {
         throw new Error(`Failed to read script: ${message}`);
       }
 
-      const { output, details } = await runRemoteScript(
+      const { output, details } = await runDetached(
         host,
         scriptContent,
         scriptPath,
-        remotePath,
+        "script",
+        timeoutMs,
         signal,
       );
 
@@ -383,10 +425,15 @@ export default function (pi: ExtensionAPI) {
 
     renderCall(args, theme, _context) {
       const host = String(args.host ?? "");
+      const timeoutSuffix =
+        typeof args.timeout === "number"
+          ? " " + theme.fg("dim", `(timeout ${args.timeout}s)`)
+          : "";
       const headerPrefix =
         theme.fg("toolTitle", theme.bold("run_script")) +
         theme.fg("dim", " → ") +
-        theme.fg("accent", host);
+        theme.fg("accent", host) +
+        timeoutSuffix;
 
       // Path-based script: show basename
       if (args.path) {
@@ -444,24 +491,54 @@ export default function (pi: ExtensionAPI) {
 
     renderResult(result, _options, theme, _context) {
       const details = result.details as RunScriptDetails | undefined;
-      if (!details) {
+
+      // Empty/absent details => a hard error thrown without structured
+      // details (upload/launch/read failure). Surface the error message.
+      if (!details || Object.keys(details).length === 0) {
         const text = result.content[0];
-        return new Text(text?.type === "text" ? text.text : "", 0, 0);
+        const raw = text?.type === "text" ? text.text : "";
+        return new Text(theme.fg("error", raw || "Result: FAILED"), 0, 0);
       }
 
       const lines: string[] = [];
 
-      // --- Header: exit code -------------------------------------------------
+      // --- Timeout / aborted: script still running on the remote -----------
+      if (details.status === "timeout" || details.status === "aborted") {
+        const tag = details.status === "timeout" ? "TIMEOUT" : "ABORTED";
+        lines.push(theme.fg("warning", `${tag}: script still running on remote`));
+        if (details.remotePid) {
+          lines.push(theme.fg("dim", `pid: ${details.remotePid}`));
+        }
+        if (details.logPaths) {
+          lines.push(theme.fg("dim", `logs: ${details.logPaths.out}`));
+        }
+        if (details.stdout) {
+          lines.push(theme.fg("dim", "partial stdout"));
+          for (const line of details.stdout.trimEnd().split("\n")) {
+            lines.push(`  ${highlightLine(line, theme)}`);
+          }
+        }
+        if (details.stderr) {
+          lines.push(theme.fg("warning", "partial stderr"));
+          for (const line of details.stderr.trimEnd().split("\n")) {
+            lines.push(`  ${highlightLine(line, theme)}`);
+          }
+        }
+        return new Text(lines.join("\n"), 1, 0);
+      }
+
+      // --- Completed: header with exit code ---------------------------------
+      const exit = details.exitCode ?? -1;
       const exitLabel =
-        details.exitCode === 0
-          ? theme.fg("dim", `exit: ${details.exitCode}`)
-          : theme.fg("error", `exit: ${details.exitCode}`);
+        exit === 0
+          ? theme.fg("dim", `exit: ${exit}`)
+          : theme.fg("error", `exit: ${exit}`);
       const header = `${exitLabel}  ${theme.fg("dim", details.remotePath)}`;
       lines.push(header);
 
       // --- Full output --------------------------------------------------------
 
-      // stdout — keyword highlight
+      // stdout - keyword highlight
       lines.push("");
       if (details.stdout) {
         lines.push(theme.fg("dim", "stdout"));
@@ -472,7 +549,7 @@ export default function (pi: ExtensionAPI) {
         lines.push(theme.fg("dim", "stdout (none)"));
       }
 
-      // stderr — keyword highlight
+      // stderr - keyword highlight
       if (details.stderr) {
         lines.push("");
         lines.push(theme.fg("warning", "stderr"));
@@ -517,7 +594,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // -------------------------------------------------------------------------
-  // file_upload — uploads a NON-EXECUTABLE file from local cwd to a remote
+  // file_upload - uploads a NON-EXECUTABLE file from local cwd to a remote
   // Ansible host. Strictly separated from run_script so scripts always go
   // through the upload-and-execute path with assertion-based validation.
   // -------------------------------------------------------------------------
@@ -530,6 +607,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet:
       "Upload a single file to a remote host",
     promptGuidelines: [
+      "file_upload is the only way to copy files to remote hosts. Never use `scp`, `ssh`, or local bash to transfer files to remote machines.",
       "Specify an explicit absolute remotePath. file_upload does not auto-pick a destination directory.",
       "For multi-step remote work that needs both data and scripts, upload files with file_upload, then use run_script to upload and execute scripts. Never embed large blobs in inline run_script commands.",
     ],
@@ -570,7 +648,7 @@ export default function (pi: ExtensionAPI) {
         throw new Error(`Source is not a regular file: ${localPath}`);
       }
 
-      // Script/Makefile/shebang upload restrictions removed — file_upload
+      // Script/Makefile/shebang upload restrictions removed - file_upload
       // now accepts any file type.
 
       // --- Upload (explicit if-else: throw on failure, run MD5 only on success) ---
@@ -676,7 +754,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!details || !details.host) {
         // Error path: execute() threw. The framework wraps the thrown
-        // error into a result with `details: {}` (not undefined) — see
+        // error into a result with `details: {}` (not undefined) - see
         // packages/agent/src/agent-loop.ts `createErrorToolResult`. We
         // must also treat that empty-object case as a failure, otherwise
         // the MD5 mismatch branch would read `details.md5` / `details
@@ -691,7 +769,7 @@ export default function (pi: ExtensionAPI) {
 
       // MD5 mismatch / md5sum failure: upload reached the remote but the
       // bytes are not trustworthy. Collapse to the failure reason and a
-      // red Result: FAILED — drop Size, it is not the actionable signal.
+      // red Result: FAILED - drop Size, it is not the actionable signal.
       if (!details.md5Verified) {
         const verifiedLabel = details.remoteMd5Error
           ? `ERROR   (${details.remoteMd5Error})`

@@ -164,7 +164,13 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| {
+			type: "command_restricted";
+			command: string;
+			reason: string;
+			timestamp: number;
+	  };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -1438,6 +1444,24 @@ export class AgentSession {
 	}
 
 	/**
+	 * Handle a provider-policy block from the bash tool. Aborts the in-flight
+	 * agent run so the model cannot continue the loop with follow-up tool
+	 * calls, and emits a session event so UI modes can surface the block to
+	 * the user without waiting for a turn_end.
+	 */
+	private _onCommandRestricted(command: string, reason: string): void {
+		if (this.agent.state.isStreaming) {
+			this.agent.abort();
+		}
+		this._emit({
+			type: "command_restricted",
+			command,
+			reason,
+			timestamp: Date.now(),
+		});
+	}
+
+	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
 	 * Handles three cases:
@@ -2579,7 +2603,14 @@ export class AgentSession {
 				)
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					bash: {
+						commandPrefix: shellCommandPrefix,
+						shellPath,
+						getModel: () => this.model,
+						onCommandRestricted: ({ command, reason }) => {
+							this._onCommandRestricted(command, reason);
+						},
+					},
 				});
 
 		this._baseToolDefinitions = new Map(

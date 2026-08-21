@@ -4,6 +4,7 @@ export {
 	createAskToolDefinition,
 } from "./ask.ts";
 export {
+	BashCommandRestrictedError,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,

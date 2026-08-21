@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
 import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
@@ -17,10 +18,25 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { checkCommandRestrictions } from "./command-restrictions.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
+
+export class BashCommandRestrictedError extends Error {
+	override name = "BashCommandRestrictedError";
+	readonly reason: string;
+	constructor(reason: string) {
+		super(
+			`Command blocked by provider policy: ${reason}\n\n` +
+				`STOP: Do NOT retry this command, do NOT try an alternative, do NOT continue the task. ` +
+				`Stop all work and wait for the user to intervene. ` +
+				`Explain to the user what you were trying to do and ask how to proceed.`,
+		);
+		this.reason = reason;
+	}
+}
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
@@ -148,6 +164,22 @@ export interface BashToolOptions {
 	shellPath?: string;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/**
+	 * Returns the model currently driving the agent. When set, the bash tool
+	 * applies per-provider command restrictions (see `command-restrictions.ts`)
+	 * before execution. Pass `() => this.model` from AgentSession so that model
+	 * switches take hold on the very next call.
+	 */
+	getModel?: () => Model<any> | undefined;
+	/**
+	 * Called immediately before the bash tool throws BashCommandRestrictedError.
+	 * AgentSession uses this to abort the in-flight agent run so the model
+	 * cannot continue the loop after seeing the block. The callback fires after
+	 * the violation has been recorded in the tool result but before the error
+	 * propagates, so callers can rely on side effects (UI prompts, audit log
+	 * entries) running synchronously with the throw.
+	 */
+	onCommandRestricted?: (info: { command: string; reason: string }) => void;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -274,6 +306,8 @@ export function createBashToolDefinition(
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
+	const getModel = options?.getModel;
+	const onCommandRestricted = options?.onCommandRestricted;
 	return {
 		name: "bash",
 		label: "bash",
@@ -289,6 +323,16 @@ export function createBashToolDefinition(
 		) {
 			if (isInPlanMode()) {
 				throw new PlanModeBashDisabledError();
+			}
+			if (getModel) {
+				const model = getModel();
+				const violation = checkCommandRestrictions(command, model?.provider);
+				if (violation) {
+					if (onCommandRestricted) {
+						onCommandRestricted({ command, reason: violation.reason });
+					}
+					throw new BashCommandRestrictedError(violation.reason);
+				}
 			}
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);

@@ -93,6 +93,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const month = String(now.getMonth() + 1).padStart(2, "0");
 	const day = String(now.getDate()).padStart(2, "0");
 	const date = `${year}-${month}-${day}`;
+	const workingContext = `\nCurrent date: ${date}\nCurrent working directory: ${promptCwd}`;
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
 
@@ -123,8 +124,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 
 		// Add date and working directory last
-		prompt += `\nCurrent date: ${date}`;
-		prompt += `\nCurrent working directory: ${promptCwd}`;
+		prompt += workingContext;
 
 		return prompt;
 	}
@@ -194,7 +194,7 @@ ${guidelines}`;
 
 		const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-		prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+		prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.${workingContext}
 
 Available tools:
 ${toolsList}
@@ -233,9 +233,12 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += formatSkillsForPrompt(skills);
 	}
 
-	// Add date and working directory last
-	prompt += `\nCurrent date: ${date}`;
-	prompt += `\nCurrent working directory: ${promptCwd}`;
+	// Date and working directory: the default prompt places them right after the
+	// identity line so the model sees its working context up front. Custom and
+	// ask-mode prompts keep them at the end.
+	if (askMode) {
+		prompt += workingContext;
+	}
 
 	if (planMode && !askMode) {
 		prompt += `\n\n## Plan Mode\n\nYou are in plan mode. You must NOT modify any project files.\n\n`;

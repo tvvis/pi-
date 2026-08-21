@@ -386,6 +386,15 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 		content: string | (TextContent | ImageContent)[],
 		options?: { deliverAs?: "steer" | "followUp" },
 	): Promise<void>;
+
+	/**
+	 * Set the model on this replacement session. Use this to carry the previous
+	 * session's model into the new session: `newSession()` re-derives the model
+	 * from CLI flags + saved default rather than inheriting it, and the captured
+	 * `pi` is stale after replacement, so this is the only way to set the model
+	 * from a `withSession` callback. Returns `false` if no auth is configured.
+	 */
+	setModel(model: Model<any>): Promise<boolean>;
 }
 
 // ============================================================================

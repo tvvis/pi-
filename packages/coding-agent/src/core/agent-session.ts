@@ -3305,6 +3305,11 @@ export class AgentSession {
 		) as ReplacedSessionContext;
 		context.sendMessage = (message, options) => this.sendCustomMessage(message, options);
 		context.sendUserMessage = (content, options) => this.sendUserMessage(content, options);
+		context.setModel = async (model) => {
+			if (!this.modelRegistry.hasConfiguredAuth(model)) return false;
+			await this.setModel(model);
+			return true;
+		};
 		return context;
 	}
 

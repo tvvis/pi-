@@ -1159,6 +1159,21 @@ pi.registerCommand("handoff", {
 });
 ```
 
+**Carrying over the model:** `newSession()` re-derives the model from CLI flags + the saved default rather than inheriting the current session's model, and the captured `pi` is stale after replacement (so `pi.setModel()` throws). The replacement context exposes `setModel()` for this case - capture the current model before the rebind and apply it in `withSession`, mirroring the internal flow plan mode uses to carry its planning model into the execution session. `setModel` returns `false` if no auth is configured for the model.
+
+```typescript
+pi.registerCommand("handoff", {
+  handler: async (_args, ctx) => {
+    const currentModel = ctx.model;
+    await ctx.newSession({
+      withSession: async (ctx) => {
+        if (currentModel) await ctx.setModel(currentModel);
+      },
+    });
+  },
+});
+```
+
 ### ctx.reload()
 
 Run the same reload flow as `/reload`.

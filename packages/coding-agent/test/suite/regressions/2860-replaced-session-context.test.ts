@@ -35,12 +35,16 @@ describe("regression #2860: replaced session callbacks", () => {
 		}
 	});
 
-	async function createRuntimeForTest(extensionFactory: ExtensionFactory, responses: string[]) {
+	async function createRuntimeForTest(
+		extensionFactory: ExtensionFactory,
+		responses: string[],
+		models: Array<{ id: string; reasoning: boolean }> = [{ id: "faux-1", reasoning: false }],
+	) {
 		const tempDir = join(tmpdir(), `pi-2860-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
 		const faux = registerFauxProvider({
-			models: [{ id: "faux-1", reasoning: false }],
+			models,
 		});
 		faux.setResponses(responses.map((response) => fauxAssistantMessage(response)));
 
@@ -270,5 +274,43 @@ describe("regression #2860: replaced session callbacks", () => {
 			"user:switch callback message",
 			"assistant:switch reply",
 		]);
+	});
+
+	it("supports setModel on the replacement session to carry over the current model", async () => {
+		const { runtime } = await createRuntimeForTest(
+			(pi) => {
+				pi.registerCommand("carry-model", {
+					description: "carry-model",
+					handler: async (_args, ctx) => {
+						// Switch the current session to faux-2 so it differs from the
+						// faux-1 default that newSession re-derives for the new session.
+						const faux2 = ctx.modelRegistry.getAvailable().find((m) => m.id === "faux-2");
+						if (faux2) await pi.setModel(faux2);
+						const currentModel = ctx.model;
+						await ctx.newSession({
+							parentSession: ctx.sessionManager.getSessionFile(),
+							withSession: async (replacedCtx) => {
+								if (currentModel) {
+									await replacedCtx.setModel(currentModel);
+								}
+							},
+						});
+					},
+				});
+			},
+			["carry reply"],
+			[
+				{ id: "faux-1", reasoning: false },
+				{ id: "faux-2", reasoning: false },
+			],
+		);
+
+		// Factory passes model: faux.getModel() (faux-1) explicitly for every session.
+		expect(runtime.session.model?.id).toBe("faux-1");
+
+		await runtime.session.prompt("/carry-model");
+
+		// Without replacedCtx.setModel the new session would revert to faux-1.
+		expect(runtime.session.model?.id).toBe("faux-2");
 	});
 });

@@ -619,7 +619,7 @@ async function prepareToolCall(
 	} catch (error) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createErrorToolResult(error),
 			isError: true,
 		};
 	}
@@ -656,7 +656,7 @@ async function executePreparedToolCall(
 	} catch (error) {
 		await Promise.all(updateEvents);
 		return {
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createErrorToolResult(error),
 			isError: true,
 		};
 	}
@@ -695,7 +695,7 @@ async function finalizeExecutedToolCall(
 				isError = afterResult.isError ?? isError;
 			}
 		} catch (error) {
-			result = createErrorToolResult(error instanceof Error ? error.message : String(error));
+			result = createErrorToolResult(error);
 			isError = true;
 		}
 	}
@@ -707,10 +707,23 @@ async function finalizeExecutedToolCall(
 	};
 }
 
-function createErrorToolResult(message: string): AgentToolResult<any> {
+function createErrorToolResult(messageOrError: unknown): AgentToolResult<any> {
+	let message: string;
+	let details: any = {};
+	if (typeof messageOrError === "string") {
+		message = messageOrError;
+	} else if (messageOrError instanceof Error) {
+		message = messageOrError.message;
+		const carrier = messageOrError as Error & { toolResultDetails?: unknown };
+		if (carrier.toolResultDetails && typeof carrier.toolResultDetails === "object") {
+			details = carrier.toolResultDetails;
+		}
+	} else {
+		message = String(messageOrError);
+	}
 	return {
 		content: [{ type: "text", text: message }],
-		details: {},
+		details,
 	};
 }
 

@@ -36,6 +36,7 @@ const GIT_ALLOWED_SUBCOMMANDS = new Set([
 	"diff-files",
 	"diff-index",
 	"diff-tree",
+	"fetch",
 	"format-patch",
 	"grep",
 	"help",

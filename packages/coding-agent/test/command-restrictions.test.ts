@@ -44,7 +44,6 @@ describe("command-restrictions", () => {
 			expect(checkCommandRestrictions("git checkout main", RESTRICTED)?.reason).toMatch(/git checkout/);
 			expect(checkCommandRestrictions("git reset --hard", RESTRICTED)?.reason).toMatch(/git reset/);
 			expect(checkCommandRestrictions("git pull", RESTRICTED)?.reason).toMatch(/git pull/);
-			expect(checkCommandRestrictions("git fetch", RESTRICTED)?.reason).toMatch(/git fetch/);
 			expect(checkCommandRestrictions("git rebase main", RESTRICTED)?.reason).toMatch(/git rebase/);
 			expect(checkCommandRestrictions("git merge feature", RESTRICTED)?.reason).toMatch(/git merge/);
 			expect(checkCommandRestrictions("git cherry-pick HEAD", RESTRICTED)?.reason).toMatch(/git cherry-pick/);
@@ -83,6 +82,7 @@ describe("command-restrictions", () => {
 				"diff-files",
 				"diff-index",
 				"diff-tree",
+				"fetch",
 				"format-patch",
 				"grep",
 				"help",
@@ -114,6 +114,16 @@ describe("command-restrictions", () => {
 			expect(checkCommandRestrictions("git add --all", RESTRICTED)).toBeUndefined();
 			expect(checkCommandRestrictions("git add -p", RESTRICTED)).toBeUndefined();
 			expect(checkCommandRestrictions("git add --patch", RESTRICTED)).toBeUndefined();
+		});
+
+		it("allows git fetch and git remote", () => {
+			expect(checkCommandRestrictions("git fetch", RESTRICTED)).toBeUndefined();
+			expect(checkCommandRestrictions("git fetch origin", RESTRICTED)).toBeUndefined();
+			expect(checkCommandRestrictions("git fetch --all", RESTRICTED)).toBeUndefined();
+			expect(checkCommandRestrictions("git fetch origin main", RESTRICTED)).toBeUndefined();
+			expect(checkCommandRestrictions("git remote -v", RESTRICTED)).toBeUndefined();
+			expect(checkCommandRestrictions("git remote show origin", RESTRICTED)).toBeUndefined();
+			expect(checkCommandRestrictions("git remote get-url origin", RESTRICTED)).toBeUndefined();
 		});
 
 		it("allows git commit", () => {

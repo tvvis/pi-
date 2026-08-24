@@ -744,6 +744,33 @@ models.push({
 			}
 		}
 
+		// Process OpenRouter models
+		if (data.openrouter?.models) {
+			for (const [modelId, model] of Object.entries(data.openrouter.models)) {
+				const m = model as ModelsDevModel & { status?: string };
+				if (m.tool_call !== true) continue;
+				if (m.status === "deprecated") continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "openrouter",
+					baseUrl: "https://openrouter.ai/api/v1",
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+				});
+			}
+		}
+
 		// Process Fireworks models
 		if (data["fireworks-ai"]?.models) {
 			for (const [modelId, model] of Object.entries(data["fireworks-ai"].models)) {
@@ -855,7 +882,15 @@ models.push({
 				}
 
 				if (variant.provider === "opencode" && modelId === "grok-build-0.1") {
-					compat = { ...(compat ?? {}), supportsReasoningEffort: false };
+					// Grok Build 0.1 on OpenCode is served via openai-responses, which
+					// does not expose the OpenAICompletionsCompat `supportsReasoningEffort`
+					// flag. Drop the override so the generated object literal only
+					// references fields that exist on OpenAIResponsesCompat.
+					if (api !== "openai-completions") {
+						compat = undefined;
+					} else {
+						compat = { ...(compat ?? {}), supportsReasoningEffort: false };
+					}
 				}
 
 				if ((variant.provider === "opencode" || variant.provider === "opencode-go") && modelId === "kimi-k2.6") {

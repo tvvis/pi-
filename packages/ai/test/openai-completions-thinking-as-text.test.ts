@@ -32,6 +32,7 @@ const compat = {
 	requiresThinkingAsText: true,
 	requiresReasoningContentOnAssistantMessages: false,
 	thinkingFormat: "openai",
+	openRouterRouting: {},
 	zaiToolStream: false,
 	supportsStrictMode: true,
 	cacheControlFormat: undefined,

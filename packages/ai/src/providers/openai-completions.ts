@@ -20,6 +20,7 @@ import type {
 	Model,
 	ModelThinkingLevel,
 	OpenAICompletionsCompat,
+	OpenRouterRouting,
 	SimpleStreamOptions,
 	StopReason,
 	StreamFunction,
@@ -85,8 +86,12 @@ interface OpenAICompatCacheControl {
 	ttl?: string;
 }
 
-type ResolvedOpenAICompletionsCompat = Omit<Required<OpenAICompletionsCompat>, "cacheControlFormat"> & {
+type ResolvedOpenAICompletionsCompat = Omit<
+	Required<OpenAICompletionsCompat>,
+	"cacheControlFormat" | "openRouterRouting"
+> & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
+	openRouterRouting?: OpenRouterRouting;
 };
 
 type ChatCompletionInstructionMessageParam = ChatCompletionDeveloperMessageParam | ChatCompletionSystemMessageParam;
@@ -580,6 +585,22 @@ function buildParams(
 		togetherParams.reasoning = { enabled: !!options?.reasoningEffort };
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			togetherParams.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
+		}
+	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
+		// OpenRouter normalizes reasoning across providers via a nested `reasoning`
+		// object. When `options.reasoningEffort` is set we send `effort`; otherwise
+		// we just enable reasoning so the upstream model can use its own effort.
+		const openRouterParams = params as typeof params & { reasoning?: { enabled?: boolean; effort?: string } };
+		if (options?.reasoningEffort) {
+			openRouterParams.reasoning = {
+				enabled: true,
+				effort: model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort,
+			};
+		} else {
+			openRouterParams.reasoning = { enabled: true };
+		}
+		if (compat.openRouterRouting && Object.keys(compat.openRouterRouting).length > 0) {
+			(params as typeof params & { provider?: unknown }).provider = compat.openRouterRouting;
 		}
 	} else if (compat.thinkingFormat === "string-thinking" && model.reasoning) {
 		const stringThinkingParams = params as typeof params & { thinking?: string };
@@ -1075,6 +1096,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 
 	const isGrok = provider === "xai" || baseUrl.includes("api.x.ai");
 	const isDeepSeek = provider === "deepseek" || baseUrl.includes("deepseek.com");
+	const isOpenRouter = provider === "openrouter" || baseUrl.includes("openrouter.ai");
 	return {
 		supportsStore: !isNonStandard,
 		supportsDeveloperRole: !isNonStandard,
@@ -1085,7 +1107,16 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		requiresAssistantAfterToolResult: false,
 		requiresThinkingAsText: false,
 		requiresReasoningContentOnAssistantMessages: isDeepSeek,
-		thinkingFormat: isDeepSeek ? "deepseek" : isZai ? "zai" : isTogether ? "together" : "openai",
+		thinkingFormat: isDeepSeek
+			? "deepseek"
+			: isZai
+				? "zai"
+				: isTogether
+					? "together"
+					: isOpenRouter
+						? "openrouter"
+						: "openai",
+		openRouterRouting: {},
 		zaiToolStream: false,
 		supportsStrictMode: !isMoonshot && !isTogether && !isCloudflareAiGateway,
 		cacheControlFormat: undefined,
@@ -1116,7 +1147,7 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 			model.compat.requiresReasoningContentOnAssistantMessages ??
 			detected.requiresReasoningContentOnAssistantMessages,
 		thinkingFormat: model.compat.thinkingFormat ?? detected.thinkingFormat,
-
+		openRouterRouting: model.compat.openRouterRouting ?? detected.openRouterRouting,
 		zaiToolStream: model.compat.zaiToolStream ?? detected.zaiToolStream,
 		supportsStrictMode: model.compat.supportsStrictMode ?? detected.supportsStrictMode,
 		cacheControlFormat: model.compat.cacheControlFormat ?? detected.cacheControlFormat,

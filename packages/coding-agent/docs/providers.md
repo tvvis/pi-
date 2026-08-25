@@ -17,6 +17,7 @@
   "fireworks":                   { "type": "api_key", "key": "" },
   "together":                    { "type": "api_key", "key": "" },
   "opencode":                    { "type": "api_key", "key": "" },
+  "openrouter":                  { "type": "api_key", "key": "" },
   "opencode-go":                 { "type": "api_key", "key": "" },
   "kimi-coding":                 { "type": "api_key", "key": "" },
   "cloudflare-workers-ai":       { "type": "api_key", "key": "" },

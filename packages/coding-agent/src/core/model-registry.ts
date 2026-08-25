@@ -301,9 +301,16 @@ function mergeCompat(
 	const override = overrideCompat as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat;
 	const merged = { ...base, ...override } as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat;
 
-	const _baseCompletions = base as OpenAICompletionsCompat | undefined;
-	const _overrideCompletions = override as OpenAICompletionsCompat;
-	const _mergedCompletions = merged as OpenAICompletionsCompat;
+	const baseCompletions = base as OpenAICompletionsCompat | undefined;
+	const overrideCompletions = override as OpenAICompletionsCompat;
+	const mergedCompletions = merged as OpenAICompletionsCompat;
+
+	if (baseCompletions?.openRouterRouting || overrideCompletions.openRouterRouting) {
+		mergedCompletions.openRouterRouting = {
+			...baseCompletions?.openRouterRouting,
+			...overrideCompletions.openRouterRouting,
+		};
+	}
 
 	return merged as Model<Api>["compat"];
 }

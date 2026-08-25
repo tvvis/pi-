@@ -4,6 +4,7 @@
 
 ### Added
 
+- Re-added `openrouter` as a built-in provider. Models route through the OpenAI Completions API (`https://openrouter.ai/api/v1`) and use OpenRouter's nested `reasoning: { effort }` payload. Auth via env `OPENROUTER_API_KEY` or `auth.json` key `openrouter`. Per-model `openRouterRouting` compat field restores full routing controls (fallbacks, parameter requirements, data collection, ZDR, ignore lists, quantizations, sort, max price, throughput/latency constraints).
 - Added `Model.customThinkingLevels?: readonly { label: string; value: string }[]`. When set on a model, this completely replaces the standard `thinkingLevelMap` cycle: the TUI shows each entry's `label` verbatim and the provider sends each entry's `value` verbatim — no pi-level indirection. Used by DeepSeek V4 to expose its native `high` / `max` efforts.
 - Added built-in `alibaba-token-plan-cn` provider backed by Alibaba Cloud Model Studio's Token Plan endpoint (`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`). Auth via env `ALIBABA_TOKEN_PLAN_API_KEY` or `auth.json` key `alibaba-token-plan-cn`. Models are pulled from `models.dev` (`alibaba-token-plan-cn` namespace) via `scripts/generate-models.ts`.
 - Added `withThinkingLevelOverrides(model, overrides)` helper to merge a per-model thinking-level override map at runtime. Consumed by `coding-agent` to apply `thinkingLevelMapOverrides` from `settings.json` so the TUI cycle, clamp, and provider request all see the merged map.
